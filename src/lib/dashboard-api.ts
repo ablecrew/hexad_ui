@@ -140,6 +140,15 @@ export const coreApi = {
             method: 'POST',
             body: JSON.stringify(payload),
         }),
+    createHabit: (payload: {
+        title: string;
+        pillar_slug: PillarSlug;
+        scheduled_time?: string;
+    }) =>
+        apiFetch<DailyHabit>('/core/habits/', {
+            method: 'POST',
+            body: JSON.stringify(payload)
+        }),
 };
 
 export const pillarSummariesApi = {

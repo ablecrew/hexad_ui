@@ -40,6 +40,10 @@ import {
     UserStreak,
     WeeklySnapshot,
 } from '@/types/api';
+import { HexadRadarChart, PillarScore } from '@/components/HexadRadarChart';
+import { BaselineQuizModal } from '@/components/BaselineQuizModal';
+
+const BASELINE_STORAGE_KEY = 'hexad_baseline_scores_v1';
 
 function formatLocalDate(d: Date, timeZone?: string): string {
     try {
@@ -87,6 +91,11 @@ function formatKsh(val: string | number | undefined): string {
     return `Ksh ${num.toLocaleString('en-KE', { maximumFractionDigits: 0 })}`;
 }
 
+function computeTargetWeight(rating: number): number {
+    const clamped = Math.max(1, Math.min(10, Math.round(rating)));
+    return 11 - clamped;
+}
+
 const PILLAR_ROUTES: Partial<Record<PillarSlug, string>> = {
     academics: '/dashboard/academics',
     financial: '/dashboard/financial',
@@ -128,6 +137,17 @@ export default function DashboardPage() {
     const [checkinNote, setCheckinNote] = useState('');
     const [checkinSubmitting, setCheckinSubmitting] = useState(false);
 
+    const [habitFormOpen, setHabitFormOpen] = useState(false);
+    const [habitTitle, setHabitTitle] = useState('');
+    const [habitPillar, setHabitPillar] = useState<PillarSlug>('academics');
+    const [habitScheduledTime, setHabitScheduledTime] = useState('');
+    const [habitSubmitting, setHabitSubmitting] = useState(false);
+
+    const [baselineScores, setBaselineScores] = useState<PillarScore[]>(() =>
+        PILLARS.map((p) => ({ slug: p.slug, current: 5, target: 8 }))
+    );
+    const [quizOpen, setQuizOpen] = useState(false);
+
     useEffect(() => {
         const tz = user?.timezone || 'Africa/Nairobi';
         const syncClock = () => {
@@ -154,6 +174,20 @@ export default function DashboardPage() {
         }, 1000);
         return () => clearInterval(timer);
     }, [focusRunning]);
+
+    useEffect(() => {
+        try {
+            const saved = localStorage.getItem(BASELINE_STORAGE_KEY);
+            if (saved) {
+                const parsed = JSON.parse(saved) as PillarScore[];
+                if (Array.isArray(parsed) && parsed.length > 0) {
+                    setBaselineScores(parsed);
+                }
+            }
+        } catch {
+            // ignore storage errors
+        }
+    }, []);
 
     const loadDashboard = useCallback(async () => {
         if (!user || !todayStr) return;
@@ -218,6 +252,38 @@ export default function DashboardPage() {
         return map;
     }, [snapshots]);
 
+    const radarScores = useMemo<PillarScore[]>(() => {
+        return PILLARS.map((pillar) => {
+            const snapScore = latestPillarScores[pillar.slug];
+            const base = baselineScores.find((b) => b.slug === pillar.slug);
+            const current =
+                typeof snapScore === 'number' && snapScore > 0
+                    ? Math.max(1, Math.min(10, Math.round(snapScore / 10)))
+                    : base?.current ?? 5;
+            return {
+                slug: pillar.slug,
+                current,
+                target: base?.target ?? 8,
+            };
+        });
+    }, [latestPillarScores, baselineScores]);
+
+    const handleSaveBaseline = async (updatedScores: PillarScore[]) => {
+        setBaselineScores(updatedScores);
+        try {
+            localStorage.setItem(BASELINE_STORAGE_KEY, JSON.stringify(updatedScores));
+        } catch {
+            // ignore storage errors
+        }
+
+        const pillarConfigs = updatedScores.map((item) => ({
+            pillar_slug: item.slug,
+            is_active: true,
+            target_weight: computeTargetWeight(item.current),
+        }));
+        await coreApi.setPillarFocuses(pillarConfigs).catch(() => {});
+    };
+
     const overallBalancePct = useMemo(() => {
         const scores = PILLARS.map((p) => latestPillarScores[p.slug] ?? 0);
         const sum = scores.reduce((acc, v) => acc + v, 0);
@@ -252,6 +318,28 @@ export default function DashboardPage() {
             await loadDashboard();
         } catch (err) {
             setError(err instanceof Error ? err.message : 'Unable to update habit.');
+        }
+    };
+
+    const handleCreateHabit = async (e: React.FormEvent) => {
+        e.preventDefault();
+        if (!habitTitle.trim()) return;
+        setHabitSubmitting(true);
+        setError(null);
+        try {
+            await coreApi.createHabit({
+                title: habitTitle.trim(),
+                pillar_slug: habitPillar,
+                scheduled_time: habitScheduledTime || undefined,
+            });
+            setHabitTitle('');
+            setHabitScheduledTime('');
+            setHabitFormOpen(false);
+            await loadDashboard();
+        } catch (err) {
+            setError(err instanceof Error ? err.message : 'Unable to create habit.');
+        } finally {
+            setHabitSubmitting(false);
         }
     };
 
@@ -547,6 +635,14 @@ export default function DashboardPage() {
                     <div className="flex items-center gap-2.5 shrink-0">
                         <button
                             type="button"
+                            onClick={() => setQuizOpen(true)}
+                            className="inline-flex items-center gap-1.5 rounded-lg border border-[#BFC9C3] bg-white px-3 py-2.5 sm:py-2 text-xs font-medium text-[#14221C] hover:bg-[#ECEEEB]"
+                        >
+                            <Sparkles className="h-3.5 w-3.5 text-[#004635]" />
+                            <span>Baseline Quiz</span>
+                        </button>
+                        <button
+                            type="button"
                             onClick={() => setFocusRunning((r) => !r)}
                             className="inline-flex flex-1 sm:flex-initial justify-center items-center gap-2 rounded-lg border border-[#BFC9C3] bg-white px-3.5 py-2.5 sm:py-2 text-xs font-medium text-[#14221C] hover:bg-[#ECEEEB]"
                         >
@@ -696,21 +792,28 @@ export default function DashboardPage() {
                             className="mt-7 sm:mt-8 grid grid-cols-1 gap-5 sm:gap-6 lg:grid-cols-12"
                         >
                             <div className="lg:col-span-7 rounded-xl border border-[#BFC9C3]/70 bg-white p-4 sm:p-5">
-                                <div className="flex items-center justify-between mb-4">
-                                    <h2 className="font-serif text-lg font-semibold text-[#111D18]">
-                                        Today&apos;s Routines
-                                    </h2>
-                                    <Link
-                                        href="/dashboard/weekly-insights"
-                                        className="text-xs text-[#707974] hover:text-[#14221C]"
+                                <div className="flex items-center justify-between gap-2 mb-4">
+                                    <div>
+                                        <h2 className="font-serif text-lg font-semibold text-[#111D18]">
+                                            Today&apos;s Routines
+                                        </h2>
+                                        <p className="text-xs text-[#707974]">
+                                            Tap a routine to toggle completion
+                                        </p>
+                                    </div>
+                                    <button
+                                        type="button"
+                                        onClick={() => setHabitFormOpen(true)}
+                                        className="inline-flex shrink-0 items-center gap-1 rounded-lg bg-[#004635] px-2.5 py-1.5 text-xs font-medium text-white hover:bg-[#1B5E4B] transition"
                                     >
-                                        Tap to mark complete
-                                    </Link>
+                                        <Plus className="h-3.5 w-3.5" />
+                                        Add habit
+                                    </button>
                                 </div>
 
                                 {habits.length === 0 ? (
                                     <p className="py-8 text-center text-xs text-[#707974]">
-                                        No daily habits created yet. Add habits via <code className="font-mono">/api/core/habits/</code>.
+                                        No daily habits created yet. Add habits via <code className="font-mono">/api/core/habits/</code> or click <strong className="text-[#14221C]">Add habit</strong> above.
                                     </p>
                                 ) : (
                                     <div className="divide-y divide-[#ECEEEB]">
@@ -798,9 +901,106 @@ export default function DashboardPage() {
                                 </div>
                             </div>
                         </div>
+
+                        <div className="mt-7 sm:mt-8">
+                            <HexadRadarChart
+                                scores={radarScores}
+                                onSelectPillar={handlePillarNavigateOrCheckin}
+                                onRecalibrate={() => setQuizOpen(true)}
+                            />
+                        </div>
                     </>
                 )}
             </main>
+
+            <BaselineQuizModal
+                open={quizOpen}
+                initialScores={baselineScores}
+                onClose={() => setQuizOpen(false)}
+                onSave={handleSaveBaseline}
+            />
+
+            {habitFormOpen && (
+                <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/35 p-0 sm:p-4">
+                    <div className="w-full max-w-md rounded-t-2xl sm:rounded-2xl border border-[#BFC9C3] bg-white p-5 sm:p-6 shadow-lg">
+                        <div className="flex items-center justify-between mb-4">
+                            <h3 className="font-serif text-xl font-semibold text-[#111D18]">
+                                New Daily Habit
+                            </h3>
+                            <button
+                                type="button"
+                                onClick={() => setHabitFormOpen(false)}
+                                className="rounded-lg p-1 text-[#707974] hover:bg-[#ECEEEB]"
+                            >
+                                <X className="h-4 w-4" />
+                            </button>
+                        </div>
+
+                        <form onSubmit={handleCreateHabit} className="space-y-4">
+                            <div>
+                                <label className="block text-xs font-medium text-[#14221C] mb-1">
+                                    Pillar
+                                </label>
+                                <select
+                                    value={habitPillar}
+                                    onChange={(e) => setHabitPillar(e.target.value as PillarSlug)}
+                                    className="w-full rounded-lg border border-[#BFC9C3] bg-[#F8FAF7] px-3 py-2 text-sm text-[#14221C]"
+                                >
+                                    {PILLARS.map((p) => (
+                                        <option key={p.slug} value={p.slug}>
+                                            {p.label}
+                                        </option>
+                                    ))}
+                                </select>
+                            </div>
+
+                            <div>
+                                <label className="block text-xs font-medium text-[#14221C] mb-1">
+                                    Habit title
+                                </label>
+                                <input
+                                    type="text"
+                                    required
+                                    value={habitTitle}
+                                    onChange={(e) => setHabitTitle(e.target.value)}
+                                    placeholder="e.g., 30m morning review"
+                                    className="w-full rounded-lg border border-[#BFC9C3] bg-[#F8FAF7] px-3 py-2 text-sm text-[#14221C]"
+                                />
+                            </div>
+
+                            <div>
+                                <label className="block text-xs font-medium text-[#14221C] mb-1">
+                                    Scheduled time (optional)
+                                </label>
+                                <input
+                                    type="time"
+                                    value={habitScheduledTime}
+                                    onChange={(e) => setHabitScheduledTime(e.target.value)}
+                                    className="w-full rounded-lg border border-[#BFC9C3] bg-[#F8FAF7] px-3 py-2 text-sm text-[#14221C]"
+                                />
+                            </div>
+
+                            <div className="flex justify-end gap-2 pt-2">
+                                <button
+                                    type="button"
+                                    onClick={() => setHabitFormOpen(false)}
+                                    className="rounded-lg border border-[#BFC9C3] px-4 py-2 text-xs font-medium text-[#2E312F]"
+                                >
+                                    Cancel
+                                </button>
+                                <button
+                                    type="submit"
+                                    disabled={habitSubmitting}
+                                    className="inline-flex items-center gap-1.5 rounded-lg bg-[#004635] px-4 py-2 text-xs font-medium text-white hover:bg-[#1B5E4B] disabled:opacity-60"
+                                >
+                                    {habitSubmitting && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+                                    Create habit
+                                </button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            )}
 
             {checkinOpen && (
                 <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/35 p-0 sm:p-4">
