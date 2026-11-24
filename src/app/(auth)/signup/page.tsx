@@ -2,13 +2,15 @@
 
 import React, { useState } from 'react';
 import Link from 'next/link';
-import { GoogleLogin, useGoogleLogin } from '@react-oauth/google';
+import { GoogleLogin } from '@react-oauth/google';
 import { Eye, EyeOff, Hexagon, Loader2 } from 'lucide-react';
 import { GoogleMark } from '@/components/GoogleMark';
 import { useAuth } from '@/context/AuthContext';
 import { coreApi } from '@/lib/dashboard-api';
 import { PILLARS } from '@/lib/pillars';
 import { PillarSlug } from '@/types/api';
+
+const GOOGLE_CLIENT_ID = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID?.trim() || '';
 
 export default function SignUpPage() {
     const { registerWithEmail, loginWithGoogle } = useAuth();
@@ -50,16 +52,6 @@ export default function SignUpPage() {
             setSubmitting(false);
         }
     };
-
-    const handleGoogleSignIn = useGoogleLogin({
-        onSuccess: async (tokenResponse) => {
-            if (!tokenResponse.access_token) return;
-            setError('Please complete Google sign-in with an ID token or email login.');
-        },
-        onError: () => setError('Google sign-in failed.'),
-    });
-
-    void handleGoogleSignIn;
 
     return (
         <div className="min-h-screen bg-[#F8F9F5] text-[#14221C] flex flex-col">
@@ -188,27 +180,35 @@ export default function SignUpPage() {
                         </button>
                     </form>
 
-                    <div className="relative my-5">
-                        <div className="absolute inset-0 flex items-center">
-                            <div className="w-full border-t border-[#ECEFE8]" />
-                        </div>
-                        <div className="relative flex justify-center text-xs">
-                            <span className="bg-white px-2.5 text-[#7A8780]">or</span>
-                        </div>
-                    </div>
+                    {GOOGLE_CLIENT_ID && (
+                        <>
+                            <div className="relative my-5">
+                                <div className="absolute inset-0 flex items-center">
+                                    <div className="w-full border-t border-[#ECEFE8]" />
+                                </div>
+                                <div className="relative flex justify-center text-xs">
+                                    <span className="bg-white px-2.5 text-[#7A8780]">or</span>
+                                </div>
+                            </div>
 
-                    <GoogleSignInButton
-                        label="Continue with Google"
-                        onIdToken={async (idToken) => {
-                            setError(null);
-                            try {
-                                await loginWithGoogle(idToken);
-                            } catch (err) {
-                                setError(err instanceof Error ? err.message : 'Google sign-in failed.');
-                            }
-                        }}
-                        onError={() => setError('Google sign-in was cancelled.')}
-                    />
+                            <GoogleSignInButton
+                                label="Continue with Google"
+                                onIdToken={async (idToken) => {
+                                    setError(null);
+                                    try {
+                                        await loginWithGoogle(idToken);
+                                    } catch (err) {
+                                        setError(
+                                            err instanceof Error
+                                                ? err.message
+                                                : 'Google sign-in failed.'
+                                        );
+                                    }
+                                }}
+                                onError={() => setError('Google sign-in was cancelled.')}
+                            />
+                        </>
+                    )}
 
                     <p className="mt-6 text-center text-xs text-[#5C6962]">
                         Already have an account?{' '}
