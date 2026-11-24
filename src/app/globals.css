@@ -1,26 +1,102 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
-
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  /* Typography */
+  --font-serif: var(--font-gelasio), "Gelasio", Georgia, serif;
+  --font-sans: var(--font-lato), "Lato", -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-mono: var(--font-red-hat-mono), "Red Hat Mono", ui-monospace, SFMono-Regular, monospace;
+
+  /* Brand & Neutrals */
+  --color-primary: #004635;
+  --color-primary-container: #1B5E4B;
+  --color-secondary: #974722;
+  --color-secondary-container: #FF996C;
+  --color-tertiary: #153E67;
+  --color-tertiary-container: #315580;
+
+  --color-surface: #F8FAF7;
+  --color-surface-bright: #F8FAF7;
+  --color-surface-container: #ECEEEB;
+  --color-background: #F8FAF7;
+  --color-inverse-surface: #2E312F;
+  --color-inverse-primary: #93D4BB;
+
+  --color-outline: #707974;
+  --color-outline-variant: #BFC9C3;
+
+  /* Semantic Status */
+  --color-error: #BA1A1A;
+  --color-error-container: #FFDAD6;
+  --color-scrim: #000000;
+  --color-shadow: #000000;
+
+  /* Pillar Accents & Containers */
+  --color-academics: #00629F;
+  --color-academics-container: #D0E4FF;
+  --color-emotional: #9C4324;
+  --color-emotional-container: #FFDBD0;
+  --color-mental: #006B5A;
+  --color-mental-container: #7AF8DA;
+  --color-physical: #885200;
+  --color-physical-container: #FFDDB8;
+  --color-financial: #006D3E;
+  --color-financial-container: #96F7B8;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+:root {
+  --hexad-primary: #004635;
+  --hexad-primary-container: #1B5E4B;
+  --hexad-secondary: #974722;
+  --hexad-secondary-container: #FF996C;
+  --hexad-tertiary: #153E67;
+  --hexad-tertiary-container: #315580;
+  --hexad-surface: #F8FAF7;
+  --hexad-surface-bright: #F8FAF7;
+  --hexad-surface-container: #ECEEEB;
+  --hexad-background: #F8FAF7;
+  --hexad-outline: #707974;
+  --hexad-outline-variant: #BFC9C3;
+  --hexad-error: #BA1A1A;
+  --hexad-error-container: #FFDAD6;
+  --hexad-inverse-surface: #2E312F;
+  --hexad-inverse-primary: #93D4BB;
+  --hexad-scrim: #000000;
+  --hexad-shadow: #000000;
+
+  --hexad-academics: #00629F;
+  --hexad-academics-container: #D0E4FF;
+  --hexad-emotional: #9C4324;
+  --hexad-emotional-container: #FFDBD0;
+  --hexad-mental: #006B5A;
+  --hexad-mental-container: #7AF8DA;
+  --hexad-physical: #885200;
+  --hexad-physical-container: #FFDDB8;
+  --hexad-financial: #006D3E;
+  --hexad-financial-container: #96F7B8;
+}
+
+@layer base {
+  html,
+  body {
+    background-color: var(--color-background);
+    color: var(--color-inverse-surface);
+    font-family: var(--font-sans);
+    font-weight: 400;
   }
-}
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  h1,
+  h2,
+  h3,
+  .font-display {
+    font-family: var(--font-serif);
+    font-weight: 600;
+  }
+
+  code,
+  pre,
+  .font-mono-num {
+    font-family: var(--font-mono);
+    font-weight: 500;
+    font-variant-numeric: tabular-nums;
+  }
 }
