@@ -7,20 +7,53 @@ const API_BASE_URL = (
 const ACCESS_KEY = 'hexad_access_token';
 const REFRESH_KEY = 'hexad_refresh_token';
 
+type CacheEntry = {
+    data: unknown;
+    expiresAt: number;
+};
+
+const responseCache = new Map<string, CacheEntry>();
+
 export const tokenStorage = {
     getAccess: () =>
         typeof window !== 'undefined' ? localStorage.getItem(ACCESS_KEY) : null,
     getRefresh: () =>
         typeof window !== 'undefined' ? localStorage.getItem(REFRESH_KEY) : null,
     setTokens: (access: string, refresh: string) => {
+        if (typeof window === 'undefined') return;
         localStorage.setItem(ACCESS_KEY, access);
         localStorage.setItem(REFRESH_KEY, refresh);
     },
     clear: () => {
+        if (typeof window === 'undefined') return;
         localStorage.removeItem(ACCESS_KEY);
         localStorage.removeItem(REFRESH_KEY);
+        responseCache.clear();
     },
 };
+
+export function invalidateApiCache(prefix?: string): void {
+    if (!prefix) {
+        responseCache.clear();
+        return;
+    }
+    for (const key of responseCache.keys()) {
+        if (key.includes(prefix)) {
+            responseCache.delete(key);
+        }
+    }
+}
+
+export function getCachedApiResponse<T>(endpoint: string): T | null {
+    const token = tokenStorage.getAccess() || 'anon';
+    const key = `${token}:${endpoint}`;
+    const entry = responseCache.get(key);
+    if (!entry) return null;
+    if (Date.now() > entry.expiresAt) {
+        return null;
+    }
+    return entry.data as T;
+}
 
 let refreshPromise: Promise<string | null> | null = null;
 
@@ -35,6 +68,7 @@ async function refreshAccessToken(): Promise<string | null> {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ refresh }),
+                    cache: 'no-store',
                 });
                 if (!res.ok) {
                     tokenStorage.clear();
@@ -56,24 +90,42 @@ async function refreshAccessToken(): Promise<string | null> {
 
 export async function apiFetch<T>(
     endpoint: string,
-    options: RequestInit & { skipAuth?: boolean } = {}
+    options: RequestInit & { skipAuth?: boolean; cacheTtlMs?: number } = {}
 ): Promise<T> {
-    const { skipAuth, headers, ...rest } = options;
+    const { skipAuth, cacheTtlMs = 0, headers, ...rest } = options;
+    const method = (rest.method || 'GET').toUpperCase();
+
+    // Invalidate related cached GET entries after mutations
+    if (method !== 'GET' && method !== 'HEAD') {
+        const resourceSegment = endpoint.split('?')[0].split('/')[1];
+        if (resourceSegment) {
+            invalidateApiCache(`/${resourceSegment}`);
+        }
+    }
+
+    const token = !skipAuth ? tokenStorage.getAccess() : null;
+    const cacheKey = `${token || 'anon'}:${endpoint}`;
+
+    if (method === 'GET' && cacheTtlMs > 0) {
+        const cached = responseCache.get(cacheKey);
+        if (cached && Date.now() < cached.expiresAt) {
+            return cached.data as T;
+        }
+    }
+
     const requestHeaders = new Headers(headers);
 
     if (!requestHeaders.has('Content-Type') && rest.body) {
         requestHeaders.set('Content-Type', 'application/json');
     }
 
-    if (!skipAuth) {
-        const token = tokenStorage.getAccess();
-        if (token) {
-            requestHeaders.set('Authorization', `Bearer ${token}`);
-        }
+    if (!skipAuth && token) {
+        requestHeaders.set('Authorization', `Bearer ${token}`);
     }
 
     let response = await fetch(`${API_BASE_URL}${endpoint}`, {
         ...rest,
+        cache: rest.cache ?? 'no-store',
         headers: requestHeaders,
     });
 
@@ -83,6 +135,7 @@ export async function apiFetch<T>(
             requestHeaders.set('Authorization', `Bearer ${newAccess}`);
             response = await fetch(`${API_BASE_URL}${endpoint}`, {
                 ...rest,
+                cache: rest.cache ?? 'no-store',
                 headers: requestHeaders,
             });
         }
@@ -106,7 +159,16 @@ export async function apiFetch<T>(
         return undefined as T;
     }
 
-    return response.json();
+    const jsonData = (await response.json()) as T;
+
+    if (method === 'GET' && cacheTtlMs > 0) {
+        responseCache.set(cacheKey, {
+            data: jsonData,
+            expiresAt: Date.now() + cacheTtlMs,
+        });
+    }
+
+    return jsonData;
 }
 
 export const authApi = {
