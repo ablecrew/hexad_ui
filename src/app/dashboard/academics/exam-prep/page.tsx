@@ -7,6 +7,7 @@ import { useAuth } from '@/context/AuthContext';
 import {
     AcademicsSummary,
     academicsApi,
+    CourseItem,
     ExamPrepSessionItem,
 } from '@/lib/academics-api';
 import { PillarGoal } from '@/types/api';
@@ -25,10 +26,12 @@ export default function ExamPrepPage() {
     const [error, setError] = useState<string | null>(null);
 
     const [summary, setSummary] = useState<AcademicsSummary | null>(null);
+    const [courses, setCourses] = useState<CourseItem[]>([]);
     const [sessions, setSessions] = useState<ExamPrepSessionItem[]>([]);
     const [goals, setGoals] = useState<PillarGoal[]>([]);
 
     const [modalOpen, setModalOpen] = useState(false);
+    const [courseId, setCourseId] = useState<string>('');
     const [topic, setTopic] = useState('');
     const [durationMins, setDurationMins] = useState('60');
     const [mockScorePct, setMockScorePct] = useState('');
@@ -40,14 +43,19 @@ export default function ExamPrepPage() {
         setLoading(true);
         setError(null);
         try {
-            const [sumRes, sessRes, goalsRes] = await Promise.all([
+            const [sumRes, coursesRes, sessRes, goalsRes] = await Promise.all([
                 academicsApi.getSummary().catch(() => null),
+                academicsApi.getCourses().catch(() => ({ count: 0, next: null, previous: null, results: [] })),
                 academicsApi.getExamPrepSessions().catch(() => ({ count: 0, next: null, previous: null, results: [] })),
                 academicsApi.getAcademicGoals().catch(() => ({ count: 0, next: null, previous: null, results: [] })),
             ]);
             setSummary(sumRes);
+            setCourses(coursesRes.results);
             setSessions(sessRes.results);
             setGoals(goalsRes.results);
+            if (coursesRes.results.length > 0) {
+                setCourseId((prev) => prev || String(coursesRes.results[0].id));
+            }
         } catch (err) {
             setError(err instanceof Error ? err.message : 'Failed to load exam prep.');
         } finally {
@@ -77,9 +85,15 @@ export default function ExamPrepPage() {
     const handleCreateMock = async (e: React.FormEvent) => {
         e.preventDefault();
         if (!topic.trim()) return;
+        if (!courseId) {
+            setError('Please select a course before starting a mock test.');
+            return;
+        }
         setSubmitting(true);
+        setError(null);
         try {
             await academicsApi.createExamPrepSession({
+                course: Number(courseId),
                 topic: topic.trim(),
                 duration_mins: Math.max(1, Number(durationMins) || 60),
                 mock_score_pct: mockScorePct ? Number(mockScorePct) : null,
@@ -99,6 +113,7 @@ export default function ExamPrepPage() {
             subtitle="Exam countdowns, topic readiness, timed mock tests, and flashcard decks."
             ctaLabel="Start mock test"
             onCtaClick={() => {
+                setCourseId((prev) => prev || (courses[0] ? String(courses[0].id) : ''));
                 setTopic('');
                 setDurationMins('60');
                 setMockScorePct('');
@@ -231,8 +246,8 @@ export default function ExamPrepPage() {
             )}
 
             {modalOpen && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 px-4">
-                    <div className="w-full max-w-md rounded-2xl border border-[#BFC9C3] bg-white p-6 shadow-lg">
+                <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/35 p-0 sm:p-4">
+                    <div className="w-full max-w-md rounded-t-2xl sm:rounded-2xl border border-[#BFC9C3] bg-white p-5 sm:p-6 shadow-lg">
                         <div className="flex items-center justify-between mb-4">
                             <h3 className="font-serif text-xl font-semibold text-[#111D18]">
                                 Start mock test
@@ -245,76 +260,110 @@ export default function ExamPrepPage() {
                                 <X className="h-4 w-4" />
                             </button>
                         </div>
-                        <form onSubmit={handleCreateMock} className="space-y-4">
-                            <div>
-                                <label className="block text-xs font-medium text-[#14221C] mb-1">
-                                    Exam / Mock Topic
-                                </label>
-                                <input
-                                    type="text"
-                                    required
-                                    value={topic}
-                                    onChange={(e) => setTopic(e.target.value)}
-                                    className="w-full rounded-lg border border-[#BFC9C3] bg-[#F8FAF7] px-3 py-2 text-sm text-[#14221C]"
-                                />
+                        {courses.length === 0 ? (
+                            <div className="space-y-4">
+                                <p className="text-xs text-[#707974]">
+                                    You need at least one course before logging an exam prep session. Create a course on the Coursework page first.
+                                </p>
+                                <div className="flex justify-end">
+                                    <button
+                                        type="button"
+                                        onClick={() => setModalOpen(false)}
+                                        className="rounded-lg border border-[#BFC9C3] px-4 py-2 text-xs font-medium text-[#2E312F]"
+                                    >
+                                        Close
+                                    </button>
+                                </div>
                             </div>
-                            <div className="grid grid-cols-2 gap-3">
+                        ) : (
+                            <form onSubmit={handleCreateMock} className="space-y-4">
                                 <div>
                                     <label className="block text-xs font-medium text-[#14221C] mb-1">
-                                        Duration (mins)
+                                        Course
                                     </label>
-                                    <input
-                                        type="number"
-                                        min={1}
+                                    <select
                                         required
-                                        value={durationMins}
-                                        onChange={(e) => setDurationMins(e.target.value)}
+                                        value={courseId}
+                                        onChange={(e) => setCourseId(e.target.value)}
                                         className="w-full rounded-lg border border-[#BFC9C3] bg-[#F8FAF7] px-3 py-2 text-sm text-[#14221C]"
-                                    />
+                                    >
+                                        {courses.map((course) => (
+                                            <option key={course.id} value={String(course.id)}>
+                                                {course.code} · {course.title}
+                                            </option>
+                                        ))}
+                                    </select>
                                 </div>
                                 <div>
                                     <label className="block text-xs font-medium text-[#14221C] mb-1">
-                                        Mock Score (%)
+                                        Exam / Mock Topic
                                     </label>
                                     <input
-                                        type="number"
-                                        min={0}
-                                        max={100}
-                                        value={mockScorePct}
-                                        onChange={(e) => setMockScorePct(e.target.value)}
+                                        type="text"
+                                        required
+                                        value={topic}
+                                        onChange={(e) => setTopic(e.target.value)}
                                         className="w-full rounded-lg border border-[#BFC9C3] bg-[#F8FAF7] px-3 py-2 text-sm text-[#14221C]"
                                     />
                                 </div>
-                            </div>
-                            <div>
-                                <label className="block text-xs font-medium text-[#14221C] mb-1">
-                                    Session Date
-                                </label>
-                                <input
-                                    type="date"
-                                    value={sessionDate}
-                                    onChange={(e) => setSessionDate(e.target.value)}
-                                    className="w-full rounded-lg border border-[#BFC9C3] bg-[#F8FAF7] px-3 py-2 text-sm text-[#14221C]"
-                                />
-                            </div>
-                            <div className="flex justify-end gap-2 pt-2">
-                                <button
-                                    type="button"
-                                    onClick={() => setModalOpen(false)}
-                                    className="rounded-lg border border-[#BFC9C3] px-4 py-2 text-xs font-medium text-[#2E312F]"
-                                >
-                                    Cancel
-                                </button>
-                                <button
-                                    type="submit"
-                                    disabled={submitting}
-                                    className="inline-flex items-center gap-1.5 rounded-lg bg-[#004635] px-4 py-2 text-xs font-medium text-white hover:bg-[#1B5E4B] disabled:opacity-60"
-                                >
-                                    {submitting && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-                                    Save
-                                </button>
-                            </div>
-                        </form>
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                    <div>
+                                        <label className="block text-xs font-medium text-[#14221C] mb-1">
+                                            Duration (mins)
+                                        </label>
+                                        <input
+                                            type="number"
+                                            min={1}
+                                            required
+                                            value={durationMins}
+                                            onChange={(e) => setDurationMins(e.target.value)}
+                                            className="w-full rounded-lg border border-[#BFC9C3] bg-[#F8FAF7] px-3 py-2 text-sm text-[#14221C]"
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="block text-xs font-medium text-[#14221C] mb-1">
+                                            Mock Score (%)
+                                        </label>
+                                        <input
+                                            type="number"
+                                            min={0}
+                                            max={100}
+                                            value={mockScorePct}
+                                            onChange={(e) => setMockScorePct(e.target.value)}
+                                            className="w-full rounded-lg border border-[#BFC9C3] bg-[#F8FAF7] px-3 py-2 text-sm text-[#14221C]"
+                                        />
+                                    </div>
+                                </div>
+                                <div>
+                                    <label className="block text-xs font-medium text-[#14221C] mb-1">
+                                        Session Date
+                                    </label>
+                                    <input
+                                        type="date"
+                                        value={sessionDate}
+                                        onChange={(e) => setSessionDate(e.target.value)}
+                                        className="w-full rounded-lg border border-[#BFC9C3] bg-[#F8FAF7] px-3 py-2 text-sm text-[#14221C]"
+                                    />
+                                </div>
+                                <div className="flex justify-end gap-2 pt-2">
+                                    <button
+                                        type="button"
+                                        onClick={() => setModalOpen(false)}
+                                        className="rounded-lg border border-[#BFC9C3] px-4 py-2 text-xs font-medium text-[#2E312F]"
+                                    >
+                                        Cancel
+                                    </button>
+                                    <button
+                                        type="submit"
+                                        disabled={submitting}
+                                        className="inline-flex items-center gap-1.5 rounded-lg bg-[#004635] px-4 py-2 text-xs font-medium text-white hover:bg-[#1B5E4B] disabled:opacity-60"
+                                    >
+                                        {submitting && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+                                        Save
+                                    </button>
+                                </div>
+                            </form>
+                        )}
                     </div>
                 </div>
             )}

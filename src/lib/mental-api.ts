@@ -11,6 +11,13 @@ export interface MentalLogItem {
     created_at?: string;
 }
 
+const EMPTY_PAGINATED_GOALS: PaginatedResponse<PillarGoal> = {
+    count: 0,
+    next: null,
+    previous: null,
+    results: [],
+};
+
 export const mentalApi = {
     getSummary: () => apiFetch<MentalSummary>('/mental/summary/'),
 
@@ -44,6 +51,12 @@ export const mentalApi = {
             body: JSON.stringify(payload),
         }),
 
-    getMentalGoals: () =>
-        apiFetch<PaginatedResponse<PillarGoal>>('/core/goals/?pillar_slug=mental'),
+    getMentalGoals: (subtabSlug?: string) => {
+        const query = subtabSlug
+            ? `/core/goals/?pillar_slug=mental&subtab_slug=${encodeURIComponent(subtabSlug)}`
+            : '/core/goals/?pillar_slug=mental';
+        return apiFetch<PaginatedResponse<PillarGoal>>(query).catch(
+            () => EMPTY_PAGINATED_GOALS
+        );
+    },
 };

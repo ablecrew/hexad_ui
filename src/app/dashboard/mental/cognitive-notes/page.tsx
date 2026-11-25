@@ -1,12 +1,43 @@
 'use client';
 
 import React, { useCallback, useEffect, useState } from 'react';
-import { Loader2, X } from 'lucide-react';
+import { Loader2, Plus, X } from 'lucide-react';
 import { MentalShell } from '@/components/mental/MentalShell';
 import { useAuth } from '@/context/AuthContext';
-import { MentalSummary } from '@/lib/dashboard-api';
+import { apiFetch } from '@/lib/api-client';
+import { coreApi, MentalSummary } from '@/lib/dashboard-api';
 import { mentalApi, MentalLogItem } from '@/lib/mental-api';
 import { PillarGoal } from '@/types/api';
+
+type GoalWithSubtab = PillarGoal & {
+    subtab_slug?: string | null;
+};
+
+const FRAMEWORK_PREFIX = '[Framework] ';
+const OTHER_MENTAL_PREFIXES = ['[Mood] ', '[Journal] ', '[Detox] ', '[Calm] '];
+const OTHER_MENTAL_SLUGS = ['mood', 'journal', 'detox', 'calm'];
+
+function isCognitiveFrameworkGoal(goal: GoalWithSubtab): boolean {
+    if (goal.subtab_slug === 'cognitive-notes') return true;
+    if (goal.subtab_slug && OTHER_MENTAL_SLUGS.includes(goal.subtab_slug)) return false;
+
+    const lowerTitle = goal.title.toLowerCase();
+    if (goal.title.startsWith(FRAMEWORK_PREFIX)) return true;
+    if (OTHER_MENTAL_PREFIXES.some((prefix) => goal.title.startsWith(prefix))) return false;
+
+    return (
+        lowerTitle.includes('framework') ||
+        lowerTitle.includes('reframe') ||
+        lowerTitle.includes('mental model') ||
+        !goal.title.startsWith('[')
+    );
+}
+
+function cleanGoalTitle(title: string): string {
+    return title.startsWith(FRAMEWORK_PREFIX)
+        ? title.slice(FRAMEWORK_PREFIX.length)
+        : title;
+}
 
 function formatShortDate(iso?: string | null): string {
     if (!iso) return 'Recent';
@@ -21,14 +52,24 @@ export default function CognitiveNotesPage() {
     const [error, setError] = useState<string | null>(null);
 
     const [summary, setSummary] = useState<MentalSummary | null>(null);
-    const [goals, setGoals] = useState<PillarGoal[]>([]);
+    const [goals, setGoals] = useState<GoalWithSubtab[]>([]);
     const [notes, setNotes] = useState<MentalLogItem[]>([]);
 
+    // New cognitive note modal
     const [modalOpen, setModalOpen] = useState(false);
     const [title, setTitle] = useState('');
     const [mins, setMins] = useState('8');
     const [noteText, setNoteText] = useState('');
     const [submitting, setSubmitting] = useState(false);
+
+    // Add framework goal modal ("Add framework")
+    const [frameworkModalOpen, setFrameworkModalOpen] = useState(false);
+    const [frameworkTitle, setFrameworkTitle] = useState('');
+    const [frameworkCadence, setFrameworkCadence] = useState('weekly');
+    const [frameworkTarget, setFrameworkTarget] = useState('5');
+    const [frameworkCurrent, setFrameworkCurrent] = useState('0');
+    const [frameworkUnit, setFrameworkUnit] = useState('reframes');
+    const [creatingFramework, setCreatingFramework] = useState(false);
 
     const loadData = useCallback(async () => {
         if (!user) return;
@@ -41,8 +82,9 @@ export default function CognitiveNotesPage() {
                 mentalApi.getCognitiveNotes(),
             ]);
             setSummary(sumRes);
-            setGoals(goalsRes.results);
-            setNotes(notesRes.results);
+            const rawGoals = Array.isArray(goalsRes.results) ? goalsRes.results : [];
+            setGoals(rawGoals.filter(isCognitiveFrameworkGoal));
+            setNotes(Array.isArray(notesRes.results) ? notesRes.results : []);
         } catch (err) {
             setError(err instanceof Error ? err.message : 'Failed to load cognitive notes.');
         } finally {
@@ -70,6 +112,55 @@ export default function CognitiveNotesPage() {
             setError(err instanceof Error ? err.message : 'Unable to save cognitive note.');
         } finally {
             setSubmitting(false);
+        }
+    };
+
+    const handleAddFrameworkGoal = async (e: React.FormEvent) => {
+        e.preventDefault();
+        if (!frameworkTitle.trim()) return;
+        setCreatingFramework(true);
+        setError(null);
+        try {
+            const targetVal = Math.max(1, Number(frameworkTarget) || 1);
+            const currentVal = Math.max(0, Number(frameworkCurrent) || 0);
+            const rawTitle = cleanGoalTitle(frameworkTitle.trim());
+            const unitLabel = frameworkUnit.trim() || 'reframes';
+
+            const createdGoal = await apiFetch<GoalWithSubtab>('/core/goals/', {
+                method: 'POST',
+                body: JSON.stringify({
+                    pillar_slug: 'mental',
+                    subtab_slug: 'cognitive-notes',
+                    title: `${FRAMEWORK_PREFIX}${rawTitle}`,
+                    cadence: frameworkCadence,
+                    target_value: targetVal,
+                    current_value: currentVal,
+                    unit: unitLabel,
+                }),
+            });
+
+            await coreApi
+                .createCheckin({
+                    pillar_slug: 'mental',
+                    subtab_slug: 'cognitive-notes',
+                    title: `New Cognitive Framework: ${rawTitle}`,
+                    note: `${frameworkCadence} target: ${targetVal} ${unitLabel}`,
+                    metric_label: 'Framework added',
+                })
+                .catch(() => null);
+
+            setGoals((prev) => [
+                { ...createdGoal, subtab_slug: createdGoal.subtab_slug ?? 'cognitive-notes' },
+                ...prev,
+            ]);
+            setFrameworkModalOpen(false);
+            await loadData();
+        } catch (err) {
+            setError(
+                err instanceof Error ? err.message : 'Unable to save cognitive framework.'
+            );
+        } finally {
+            setCreatingFramework(false);
         }
     };
 
@@ -127,36 +218,69 @@ export default function CognitiveNotesPage() {
 
                     <div className="mt-8 grid grid-cols-1 gap-6 lg:grid-cols-12">
                         <div className="lg:col-span-7">
-                            <h2 className="font-serif text-xl font-semibold text-[#111D18] mb-3.5">
-                                Active Frameworks
-                            </h2>
+                            <div className="flex items-center justify-between gap-3 mb-3.5">
+                                <h2 className="font-serif text-xl font-semibold text-[#111D18]">
+                                    Active Frameworks
+                                </h2>
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        setFrameworkTitle('');
+                                        setFrameworkCadence('weekly');
+                                        setFrameworkTarget('5');
+                                        setFrameworkCurrent('0');
+                                        setFrameworkUnit('reframes');
+                                        setFrameworkModalOpen(true);
+                                    }}
+                                    className="inline-flex items-center gap-1.5 rounded-lg bg-[#004635] px-3 py-1.5 text-xs font-medium text-white hover:bg-[#1B5E4B] transition"
+                                >
+                                    <Plus className="h-3.5 w-3.5" />
+                                    Add framework
+                                </button>
+                            </div>
+
                             {goals.length === 0 ? (
                                 <div className="rounded-xl border border-[#BFC9C3]/70 bg-white p-6 text-xs text-[#707974]">
-                                    No cognitive frameworks set yet.
+                                    <p>No cognitive frameworks set yet.</p>
+                                    <button
+                                        type="button"
+                                        onClick={() => {
+                                            setFrameworkTitle('');
+                                            setFrameworkCadence('weekly');
+                                            setFrameworkTarget('5');
+                                            setFrameworkCurrent('0');
+                                            setFrameworkUnit('reframes');
+                                            setFrameworkModalOpen(true);
+                                        }}
+                                        className="mt-3 inline-flex items-center gap-1.5 rounded-lg border border-[#004635] px-3 py-1.5 text-xs font-medium text-[#004635] hover:bg-[#F2F6F4]"
+                                    >
+                                        <Plus className="h-3.5 w-3.5" />
+                                        Add framework
+                                    </button>
                                 </div>
                             ) : (
                                 <div className="space-y-3.5">
-                                    {goals.map((g) => {
+                                    {goals.map((g, idx) => {
                                         const target = Number(g.target_value) || 1;
                                         const current = Number(g.current_value) || 0;
                                         const pct = Math.min(100, Math.max(0, Math.round((current / target) * 100)));
                                         return (
                                             <div
-                                                key={g.id}
+                                                key={g.id ?? idx}
                                                 className="rounded-xl border border-[#BFC9C3]/70 bg-white p-5"
                                             >
                                                 <div className="flex items-start justify-between gap-3">
                                                     <div>
                                                         <div className="text-sm font-semibold text-[#14221C]">
-                                                            {g.title}
+                                                            {cleanGoalTitle(g.title)}
                                                         </div>
                                                         <div className="text-xs text-[#707974] capitalize mt-0.5">
                                                             {g.cadence} framework
                                                         </div>
                                                     </div>
                                                     <span className="font-mono text-xs font-semibold text-[#006B5A]">
-                            {pct}%
-                          </span>
+                                                        {pct}%
+                                                    </span>
                                                 </div>
                                                 <div className="mt-3.5 h-2 w-full overflow-hidden rounded-full bg-[#ECEEEB]">
                                                     <div
@@ -199,8 +323,8 @@ export default function CognitiveNotesPage() {
                                                 </div>
                                             </div>
                                             <span className="font-mono text-xs font-semibold text-[#006B5A] shrink-0">
-                        {n.duration_mins ? `${n.duration_mins}m` : 'Note'}
-                      </span>
+                                                {n.duration_mins ? `${n.duration_mins}m` : 'Note'}
+                                            </span>
                                         </div>
                                     ))}
                                 </div>
@@ -210,6 +334,7 @@ export default function CognitiveNotesPage() {
                 </>
             )}
 
+            {/* New Cognitive Note Modal */}
             {modalOpen && (
                 <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 px-4">
                     <div className="w-full max-w-md rounded-2xl border border-[#BFC9C3] bg-white p-6 shadow-lg">
@@ -277,6 +402,115 @@ export default function CognitiveNotesPage() {
                                 >
                                     {submitting && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
                                     Save
+                                </button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            )}
+
+            {/* Add Cognitive Framework Goal Modal */}
+            {frameworkModalOpen && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 px-4">
+                    <div className="w-full max-w-md rounded-2xl border border-[#BFC9C3] bg-white p-6 shadow-lg">
+                        <div className="flex items-center justify-between mb-4">
+                            <h3 className="font-serif text-xl font-semibold text-[#111D18]">
+                                Add framework
+                            </h3>
+                            <button
+                                type="button"
+                                onClick={() => setFrameworkModalOpen(false)}
+                                className="rounded-lg p-1 text-[#707974] hover:bg-[#ECEEEB]"
+                            >
+                                <X className="h-4 w-4" />
+                            </button>
+                        </div>
+                        <form onSubmit={handleAddFrameworkGoal} className="space-y-4">
+                            <div>
+                                <label className="block text-xs font-medium text-[#14221C] mb-1">
+                                    Framework Title
+                                </label>
+                                <input
+                                    type="text"
+                                    required
+                                    value={frameworkTitle}
+                                    onChange={(e) => setFrameworkTitle(e.target.value)}
+                                    placeholder="e.g., First-Principles Check"
+                                    className="w-full rounded-lg border border-[#BFC9C3] bg-[#F8FAF7] px-3 py-2 text-sm text-[#14221C]"
+                                />
+                            </div>
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                <div>
+                                    <label className="block text-xs font-medium text-[#14221C] mb-1">
+                                        Cadence
+                                    </label>
+                                    <select
+                                        value={frameworkCadence}
+                                        onChange={(e) => setFrameworkCadence(e.target.value)}
+                                        className="w-full rounded-lg border border-[#BFC9C3] bg-[#F8FAF7] px-3 py-2 text-sm text-[#14221C]"
+                                    >
+                                        <option value="daily">Daily</option>
+                                        <option value="weekly">Weekly</option>
+                                        <option value="monthly">Monthly</option>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label className="block text-xs font-medium text-[#14221C] mb-1">
+                                        Unit
+                                    </label>
+                                    <input
+                                        type="text"
+                                        value={frameworkUnit}
+                                        onChange={(e) => setFrameworkUnit(e.target.value)}
+                                        placeholder="e.g., reframes, sessions"
+                                        className="w-full rounded-lg border border-[#BFC9C3] bg-[#F8FAF7] px-3 py-2 text-sm text-[#14221C]"
+                                    />
+                                </div>
+                            </div>
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                <div>
+                                    <label className="block text-xs font-medium text-[#14221C] mb-1">
+                                        Current Progress
+                                    </label>
+                                    <input
+                                        type="number"
+                                        min={0}
+                                        step="any"
+                                        value={frameworkCurrent}
+                                        onChange={(e) => setFrameworkCurrent(e.target.value)}
+                                        className="w-full rounded-lg border border-[#BFC9C3] bg-[#F8FAF7] px-3 py-2 text-sm text-[#14221C]"
+                                    />
+                                </div>
+                                <div>
+                                    <label className="block text-xs font-medium text-[#14221C] mb-1">
+                                        Target Value
+                                    </label>
+                                    <input
+                                        type="number"
+                                        min={1}
+                                        step="any"
+                                        required
+                                        value={frameworkTarget}
+                                        onChange={(e) => setFrameworkTarget(e.target.value)}
+                                        className="w-full rounded-lg border border-[#BFC9C3] bg-[#F8FAF7] px-3 py-2 text-sm text-[#14221C]"
+                                    />
+                                </div>
+                            </div>
+                            <div className="flex justify-end gap-2 pt-2">
+                                <button
+                                    type="button"
+                                    onClick={() => setFrameworkModalOpen(false)}
+                                    className="rounded-lg border border-[#BFC9C3] px-4 py-2 text-xs font-medium text-[#2E312F]"
+                                >
+                                    Cancel
+                                </button>
+                                <button
+                                    type="submit"
+                                    disabled={creatingFramework}
+                                    className="inline-flex items-center gap-1.5 rounded-lg bg-[#004635] px-4 py-2 text-xs font-medium text-white hover:bg-[#1B5E4B] disabled:opacity-60"
+                                >
+                                    {creatingFramework && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+                                    Save framework
                                 </button>
                             </div>
                         </form>

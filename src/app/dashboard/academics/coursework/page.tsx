@@ -1,8 +1,7 @@
-// src/app/dashboard/academics/coursework/page.tsx
 'use client';
 
 import React, { useCallback, useEffect, useState } from 'react';
-import { Loader2, X } from 'lucide-react';
+import { Loader2, Plus, X } from 'lucide-react';
 import { AcademicsShell } from '@/components/academics/AcademicsShell';
 import { useAuth } from '@/context/AuthContext';
 import {
@@ -40,7 +39,18 @@ export default function CourseworkPage() {
     const [courses, setCourses] = useState<CourseItem[]>([]);
     const [assignments, setAssignments] = useState<AssignmentItem[]>([]);
 
+    // Add Course modal state
+    const [courseModalOpen, setCourseModalOpen] = useState(false);
+    const [courseCode, setCourseCode] = useState('');
+    const [courseTitle, setCourseTitle] = useState('');
+    const [courseCredits, setCourseCredits] = useState('3');
+    const [courseTerm, setCourseTerm] = useState('');
+    const [courseGradePct, setCourseGradePct] = useState('');
+    const [courseSubmitting, setCourseSubmitting] = useState(false);
+
+    // Add Assignment modal state
     const [modalOpen, setModalOpen] = useState(false);
+    const [courseId, setCourseId] = useState<string>('');
     const [title, setTitle] = useState('');
     const [weightPct, setWeightPct] = useState('');
     const [scorePct, setScorePct] = useState('');
@@ -60,6 +70,9 @@ export default function CourseworkPage() {
             setSummary(sumRes);
             setCourses(coursesRes.results);
             setAssignments(assignRes.results);
+            if (coursesRes.results.length > 0) {
+                setCourseId((prev) => prev || String(coursesRes.results[0].id));
+            }
         } catch (err) {
             setError(err instanceof Error ? err.message : 'Failed to load coursework.');
         } finally {
@@ -71,12 +84,52 @@ export default function CourseworkPage() {
         void loadData();
     }, [loadData]);
 
+    const openCourseModal = () => {
+        setCourseCode('');
+        setCourseTitle('');
+        setCourseCredits('3');
+        setCourseTerm('');
+        setCourseGradePct('');
+        setCourseModalOpen(true);
+    };
+
+    const handleCreateCourse = async (e: React.FormEvent) => {
+        e.preventDefault();
+        if (!courseCode.trim() || !courseTitle.trim()) return;
+        setCourseSubmitting(true);
+        setError(null);
+        try {
+            const created = await academicsApi.createCourse({
+                code: courseCode.trim(),
+                title: courseTitle.trim(),
+                credits: Math.max(0, Number(courseCredits) || 0),
+                term: courseTerm.trim(),
+                current_grade_pct: courseGradePct !== '' ? Number(courseGradePct) : null,
+            });
+            setCourseModalOpen(false);
+            await loadData();
+            if (created?.id !== undefined) {
+                setCourseId(String(created.id));
+            }
+        } catch (err) {
+            setError(err instanceof Error ? err.message : 'Unable to save course.');
+        } finally {
+            setCourseSubmitting(false);
+        }
+    };
+
     const handleCreateAssignment = async (e: React.FormEvent) => {
         e.preventDefault();
         if (!title.trim()) return;
+        if (!courseId) {
+            setError('Please select a course before adding an assignment.');
+            return;
+        }
         setSubmitting(true);
+        setError(null);
         try {
             await academicsApi.createAssignment({
+                course: Number(courseId),
                 title: title.trim(),
                 weight_pct: weightPct ? Number(weightPct) : null,
                 score_pct: scorePct ? Number(scorePct) : null,
@@ -99,6 +152,7 @@ export default function CourseworkPage() {
             subtitle="Coursework standing, term GPA, graded assignments, and upcoming deadlines."
             ctaLabel="Add assignment"
             onCtaClick={() => {
+                setCourseId((prev) => prev || (courses[0] ? String(courses[0].id) : ''));
                 setTitle('');
                 setWeightPct('');
                 setScorePct('');
@@ -153,12 +207,31 @@ export default function CourseworkPage() {
 
                     <div className="mt-8 grid grid-cols-1 gap-6 lg:grid-cols-12">
                         <div className="lg:col-span-7">
-                            <h2 className="font-serif text-xl font-semibold text-[#111D18] mb-3.5">
-                                Active Courses
-                            </h2>
+                            <div className="flex items-center justify-between gap-2 mb-3.5">
+                                <h2 className="font-serif text-xl font-semibold text-[#111D18]">
+                                    Active Courses
+                                </h2>
+                                <button
+                                    type="button"
+                                    onClick={openCourseModal}
+                                    className="inline-flex items-center gap-1 rounded-lg border border-[#BFC9C3] bg-white px-3 py-1.5 text-xs font-medium text-[#14221C] hover:bg-[#ECEEEB] transition"
+                                >
+                                    <Plus className="h-3.5 w-3.5 text-[#004635]" />
+                                    Add course
+                                </button>
+                            </div>
+
                             {courses.length === 0 ? (
                                 <div className="rounded-xl border border-[#BFC9C3]/70 bg-white p-6 text-xs text-[#707974]">
-                                    No courses found yet.
+                                    <p>No courses found yet. Create a course first to start tracking coursework and assignments.</p>
+                                    <button
+                                        type="button"
+                                        onClick={openCourseModal}
+                                        className="mt-3 inline-flex items-center gap-1.5 rounded-lg bg-[#004635] px-3.5 py-2 text-xs font-medium text-white hover:bg-[#1B5E4B]"
+                                    >
+                                        <Plus className="h-3.5 w-3.5" />
+                                        Create first course
+                                    </button>
                                 </div>
                             ) : (
                                 <div className="space-y-3.5">
@@ -184,10 +257,10 @@ export default function CourseworkPage() {
                                                         </div>
                                                     </div>
                                                     <span className="font-mono text-xs font-semibold text-[#00629F]">
-                            {gradeNum !== null
-                                ? `${gradeNum}% (${formatGradeLetter(gradeNum)})`
-                                : '—'}
-                          </span>
+                                                        {gradeNum !== null
+                                                            ? `${gradeNum}% (${formatGradeLetter(gradeNum)})`
+                                                            : '—'}
+                                                    </span>
                                                 </div>
                                                 <div className="mt-3.5 h-2 w-full overflow-hidden rounded-full bg-[#ECEEEB]">
                                                     <div
@@ -227,12 +300,12 @@ export default function CourseworkPage() {
                                                 </div>
                                             </div>
                                             <span className="font-mono text-xs font-semibold text-[#00629F] shrink-0">
-                        {item.score_pct !== null && item.score_pct !== undefined
-                            ? `${item.score_pct}%`
-                            : item.weight_pct
-                                ? `${item.weight_pct}% wt`
-                                : item.status}
-                      </span>
+                                                {item.score_pct !== null && item.score_pct !== undefined
+                                                    ? `${item.score_pct}%`
+                                                    : item.weight_pct
+                                                        ? `${item.weight_pct}% wt`
+                                                        : item.status}
+                                            </span>
                                         </div>
                                     ))}
                                 </div>
@@ -242,9 +315,124 @@ export default function CourseworkPage() {
                 </>
             )}
 
+            {/* Add Course Modal */}
+            {courseModalOpen && (
+                <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/35 p-0 sm:p-4">
+                    <div className="w-full max-w-md rounded-t-2xl sm:rounded-2xl border border-[#BFC9C3] bg-white p-5 sm:p-6 shadow-lg">
+                        <div className="flex items-center justify-between mb-4">
+                            <h3 className="font-serif text-xl font-semibold text-[#111D18]">
+                                Add course
+                            </h3>
+                            <button
+                                type="button"
+                                onClick={() => setCourseModalOpen(false)}
+                                className="rounded-lg p-1 text-[#707974] hover:bg-[#ECEEEB]"
+                            >
+                                <X className="h-4 w-4" />
+                            </button>
+                        </div>
+
+                        <form onSubmit={handleCreateCourse} className="space-y-4">
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                <div>
+                                    <label className="block text-xs font-medium text-[#14221C] mb-1">
+                                        Course Code
+                                    </label>
+                                    <input
+                                        type="text"
+                                        required
+                                        value={courseCode}
+                                        onChange={(e) => setCourseCode(e.target.value)}
+                                        placeholder="e.g., CS 301"
+                                        className="w-full rounded-lg border border-[#BFC9C3] bg-[#F8FAF7] px-3 py-2 text-sm text-[#14221C]"
+                                    />
+                                </div>
+                                <div>
+                                    <label className="block text-xs font-medium text-[#14221C] mb-1">
+                                        Credits
+                                    </label>
+                                    <input
+                                        type="number"
+                                        min={0}
+                                        max={20}
+                                        step="0.5"
+                                        required
+                                        value={courseCredits}
+                                        onChange={(e) => setCourseCredits(e.target.value)}
+                                        className="w-full rounded-lg border border-[#BFC9C3] bg-[#F8FAF7] px-3 py-2 text-sm text-[#14221C]"
+                                    />
+                                </div>
+                            </div>
+
+                            <div>
+                                <label className="block text-xs font-medium text-[#14221C] mb-1">
+                                    Course Title
+                                </label>
+                                <input
+                                    type="text"
+                                    required
+                                    value={courseTitle}
+                                    onChange={(e) => setCourseTitle(e.target.value)}
+                                    placeholder="e.g., Distributed Systems"
+                                    className="w-full rounded-lg border border-[#BFC9C3] bg-[#F8FAF7] px-3 py-2 text-sm text-[#14221C]"
+                                />
+                            </div>
+
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                <div>
+                                    <label className="block text-xs font-medium text-[#14221C] mb-1">
+                                        Term (optional)
+                                    </label>
+                                    <input
+                                        type="text"
+                                        value={courseTerm}
+                                        onChange={(e) => setCourseTerm(e.target.value)}
+                                        placeholder="e.g., Fall 2026"
+                                        className="w-full rounded-lg border border-[#BFC9C3] bg-[#F8FAF7] px-3 py-2 text-sm text-[#14221C]"
+                                    />
+                                </div>
+                                <div>
+                                    <label className="block text-xs font-medium text-[#14221C] mb-1">
+                                        Current Grade % (optional)
+                                    </label>
+                                    <input
+                                        type="number"
+                                        min={0}
+                                        max={100}
+                                        value={courseGradePct}
+                                        onChange={(e) => setCourseGradePct(e.target.value)}
+                                        placeholder="e.g., 85"
+                                        className="w-full rounded-lg border border-[#BFC9C3] bg-[#F8FAF7] px-3 py-2 text-sm text-[#14221C]"
+                                    />
+                                </div>
+                            </div>
+
+                            <div className="flex justify-end gap-2 pt-2">
+                                <button
+                                    type="button"
+                                    onClick={() => setCourseModalOpen(false)}
+                                    className="rounded-lg border border-[#BFC9C3] px-4 py-2 text-xs font-medium text-[#2E312F]"
+                                >
+                                    Cancel
+                                </button>
+                                <button
+                                    type="submit"
+                                    disabled={courseSubmitting}
+                                    className="inline-flex items-center gap-1.5 rounded-lg bg-[#004635] px-4 py-2 text-xs font-medium text-white hover:bg-[#1B5E4B] disabled:opacity-60"
+                                >
+                                    {courseSubmitting && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+                                    Save course
+                                </button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            )}
+
+            {/* Add Assignment Modal */}
             {modalOpen && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 px-4">
-                    <div className="w-full max-w-md rounded-2xl border border-[#BFC9C3] bg-white p-6 shadow-lg">
+                <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/35 p-0 sm:p-4">
+                    <div className="w-full max-w-md rounded-t-2xl sm:rounded-2xl border border-[#BFC9C3] bg-white p-5 sm:p-6 shadow-lg">
                         <div className="flex items-center justify-between mb-4">
                             <h3 className="font-serif text-xl font-semibold text-[#111D18]">
                                 Add assignment
@@ -257,76 +445,121 @@ export default function CourseworkPage() {
                                 <X className="h-4 w-4" />
                             </button>
                         </div>
-                        <form onSubmit={handleCreateAssignment} className="space-y-4">
-                            <div>
-                                <label className="block text-xs font-medium text-[#14221C] mb-1">
-                                    Assignment Title
-                                </label>
-                                <input
-                                    type="text"
-                                    required
-                                    value={title}
-                                    onChange={(e) => setTitle(e.target.value)}
-                                    className="w-full rounded-lg border border-[#BFC9C3] bg-[#F8FAF7] px-3 py-2 text-sm text-[#14221C]"
-                                />
+                        {courses.length === 0 ? (
+                            <div className="space-y-4">
+                                <p className="text-xs text-[#707974]">
+                                    You need at least one course before adding an assignment.
+                                </p>
+                                <div className="flex justify-end gap-2">
+                                    <button
+                                        type="button"
+                                        onClick={() => setModalOpen(false)}
+                                        className="rounded-lg border border-[#BFC9C3] px-4 py-2 text-xs font-medium text-[#2E312F]"
+                                    >
+                                        Close
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => {
+                                            setModalOpen(false);
+                                            openCourseModal();
+                                        }}
+                                        className="inline-flex items-center gap-1 rounded-lg bg-[#004635] px-4 py-2 text-xs font-medium text-white hover:bg-[#1B5E4B]"
+                                    >
+                                        <Plus className="h-3.5 w-3.5" />
+                                        Add course
+                                    </button>
+                                </div>
                             </div>
-                            <div className="grid grid-cols-2 gap-3">
+                        ) : (
+                            <form onSubmit={handleCreateAssignment} className="space-y-4">
                                 <div>
                                     <label className="block text-xs font-medium text-[#14221C] mb-1">
-                                        Weight (%)
+                                        Course
                                     </label>
-                                    <input
-                                        type="number"
-                                        min={0}
-                                        max={100}
-                                        value={weightPct}
-                                        onChange={(e) => setWeightPct(e.target.value)}
+                                    <select
+                                        required
+                                        value={courseId}
+                                        onChange={(e) => setCourseId(e.target.value)}
                                         className="w-full rounded-lg border border-[#BFC9C3] bg-[#F8FAF7] px-3 py-2 text-sm text-[#14221C]"
-                                    />
+                                    >
+                                        {courses.map((course) => (
+                                            <option key={course.id} value={String(course.id)}>
+                                                {course.code} · {course.title}
+                                            </option>
+                                        ))}
+                                    </select>
                                 </div>
                                 <div>
                                     <label className="block text-xs font-medium text-[#14221C] mb-1">
-                                        Score (%)
+                                        Assignment Title
                                     </label>
                                     <input
-                                        type="number"
-                                        min={0}
-                                        max={100}
-                                        value={scorePct}
-                                        onChange={(e) => setScorePct(e.target.value)}
+                                        type="text"
+                                        required
+                                        value={title}
+                                        onChange={(e) => setTitle(e.target.value)}
                                         className="w-full rounded-lg border border-[#BFC9C3] bg-[#F8FAF7] px-3 py-2 text-sm text-[#14221C]"
                                     />
                                 </div>
-                            </div>
-                            <div>
-                                <label className="block text-xs font-medium text-[#14221C] mb-1">
-                                    Due Date
-                                </label>
-                                <input
-                                    type="date"
-                                    value={dueDate}
-                                    onChange={(e) => setDueDate(e.target.value)}
-                                    className="w-full rounded-lg border border-[#BFC9C3] bg-[#F8FAF7] px-3 py-2 text-sm text-[#14221C]"
-                                />
-                            </div>
-                            <div className="flex justify-end gap-2 pt-2">
-                                <button
-                                    type="button"
-                                    onClick={() => setModalOpen(false)}
-                                    className="rounded-lg border border-[#BFC9C3] px-4 py-2 text-xs font-medium text-[#2E312F]"
-                                >
-                                    Cancel
-                                </button>
-                                <button
-                                    type="submit"
-                                    disabled={submitting}
-                                    className="inline-flex items-center gap-1.5 rounded-lg bg-[#004635] px-4 py-2 text-xs font-medium text-white hover:bg-[#1B5E4B] disabled:opacity-60"
-                                >
-                                    {submitting && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-                                    Save
-                                </button>
-                            </div>
-                        </form>
+                                <div className="grid grid-cols-2 gap-3">
+                                    <div>
+                                        <label className="block text-xs font-medium text-[#14221C] mb-1">
+                                            Weight (%)
+                                        </label>
+                                        <input
+                                            type="number"
+                                            min={0}
+                                            max={100}
+                                            value={weightPct}
+                                            onChange={(e) => setWeightPct(e.target.value)}
+                                            className="w-full rounded-lg border border-[#BFC9C3] bg-[#F8FAF7] px-3 py-2 text-sm text-[#14221C]"
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="block text-xs font-medium text-[#14221C] mb-1">
+                                            Score (%)
+                                        </label>
+                                        <input
+                                            type="number"
+                                            min={0}
+                                            max={100}
+                                            value={scorePct}
+                                            onChange={(e) => setScorePct(e.target.value)}
+                                            className="w-full rounded-lg border border-[#BFC9C3] bg-[#F8FAF7] px-3 py-2 text-sm text-[#14221C]"
+                                        />
+                                    </div>
+                                </div>
+                                <div>
+                                    <label className="block text-xs font-medium text-[#14221C] mb-1">
+                                        Due Date
+                                    </label>
+                                    <input
+                                        type="date"
+                                        value={dueDate}
+                                        onChange={(e) => setDueDate(e.target.value)}
+                                        className="w-full rounded-lg border border-[#BFC9C3] bg-[#F8FAF7] px-3 py-2 text-sm text-[#14221C]"
+                                    />
+                                </div>
+                                <div className="flex justify-end gap-2 pt-2">
+                                    <button
+                                        type="button"
+                                        onClick={() => setModalOpen(false)}
+                                        className="rounded-lg border border-[#BFC9C3] px-4 py-2 text-xs font-medium text-[#2E312F]"
+                                    >
+                                        Cancel
+                                    </button>
+                                    <button
+                                        type="submit"
+                                        disabled={submitting}
+                                        className="inline-flex items-center gap-1.5 rounded-lg bg-[#004635] px-4 py-2 text-xs font-medium text-white hover:bg-[#1B5E4B] disabled:opacity-60"
+                                    >
+                                        {submitting && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+                                        Save
+                                    </button>
+                                </div>
+                            </form>
+                        )}
                     </div>
                 </div>
             )}

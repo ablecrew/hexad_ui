@@ -1,9 +1,10 @@
 'use client';
 
 import React, { useCallback, useEffect, useState } from 'react';
-import { Loader2, Play, Square } from 'lucide-react';
+import { Loader2, Play, Plus, Square, X } from 'lucide-react';
 import { MentalShell } from '@/components/mental/MentalShell';
 import { useAuth } from '@/context/AuthContext';
+import { apiFetch } from '@/lib/api-client';
 import {
     coreApi,
     MentalSummary,
@@ -11,6 +12,37 @@ import {
 } from '@/lib/dashboard-api';
 import { mentalApi } from '@/lib/mental-api';
 import { PillarGoal } from '@/types/api';
+
+type GoalWithSubtab = PillarGoal & {
+    subtab_slug?: string | null;
+};
+
+const PROTOCOL_PREFIX = '[Protocol] ';
+const OTHER_MENTAL_PREFIXES = ['[Framework] ', '[Guardrail] ', '[Habit] ', '[Mood] ', '[Journal] ', '[Calm] '];
+const OTHER_MENTAL_SLUGS = ['cognitive-notes', 'detox', 'focus-training', 'mood', 'journal', 'calm'];
+
+function isStressProtocolGoal(goal: GoalWithSubtab): boolean {
+    if (goal.subtab_slug === 'stress-reset') return true;
+    if (goal.subtab_slug && OTHER_MENTAL_SLUGS.includes(goal.subtab_slug)) return false;
+
+    const lowerTitle = goal.title.toLowerCase();
+    if (goal.title.startsWith(PROTOCOL_PREFIX)) return true;
+    if (OTHER_MENTAL_PREFIXES.some((prefix) => goal.title.startsWith(prefix))) return false;
+
+    return (
+        lowerTitle.includes('reset') ||
+        lowerTitle.includes('protocol') ||
+        lowerTitle.includes('sigh') ||
+        lowerTitle.includes('decompress') ||
+        !goal.title.startsWith('[')
+    );
+}
+
+function cleanGoalTitle(title: string): string {
+    return title.startsWith(PROTOCOL_PREFIX)
+        ? title.slice(PROTOCOL_PREFIX.length)
+        : title;
+}
 
 function formatShortDate(iso?: string | null): string {
     if (!iso) return 'Recent';
@@ -25,11 +57,20 @@ export default function StressResetPage() {
     const [error, setError] = useState<string | null>(null);
 
     const [summary, setSummary] = useState<MentalSummary | null>(null);
-    const [goals, setGoals] = useState<PillarGoal[]>([]);
+    const [goals, setGoals] = useState<GoalWithSubtab[]>([]);
     const [resets, setResets] = useState<PillarCheckin[]>([]);
 
     const [resetActive, setResetActive] = useState(false);
     const [secondsLeft, setSecondsLeft] = useState(5 * 60);
+
+    // Add stress reset protocol goal modal ("Add protocol")
+    const [protocolModalOpen, setProtocolModalOpen] = useState(false);
+    const [protocolTitle, setProtocolTitle] = useState('');
+    const [protocolCadence, setProtocolCadence] = useState('daily');
+    const [protocolTarget, setProtocolTarget] = useState('3');
+    const [protocolCurrent, setProtocolCurrent] = useState('0');
+    const [protocolUnit, setProtocolUnit] = useState('resets');
+    const [creatingProtocol, setCreatingProtocol] = useState(false);
 
     const loadData = useCallback(async () => {
         if (!user) return;
@@ -42,8 +83,9 @@ export default function StressResetPage() {
                 coreApi.getCheckins('mental').catch(() => ({ count: 0, next: null, previous: null, results: [] })),
             ]);
             setSummary(sumRes);
-            setGoals(goalsRes.results);
-            setResets(checkinsRes.results);
+            const rawGoals = Array.isArray(goalsRes.results) ? goalsRes.results : [];
+            setGoals(rawGoals.filter(isStressProtocolGoal));
+            setResets(Array.isArray(checkinsRes.results) ? checkinsRes.results : []);
         } catch (err) {
             setError(err instanceof Error ? err.message : 'Failed to load stress resets.');
         } finally {
@@ -62,6 +104,55 @@ export default function StressResetPage() {
         }, 1000);
         return () => clearInterval(id);
     }, [resetActive]);
+
+    const handleAddProtocolGoal = async (e: React.FormEvent) => {
+        e.preventDefault();
+        if (!protocolTitle.trim()) return;
+        setCreatingProtocol(true);
+        setError(null);
+        try {
+            const targetVal = Math.max(1, Number(protocolTarget) || 1);
+            const currentVal = Math.max(0, Number(protocolCurrent) || 0);
+            const rawTitle = cleanGoalTitle(protocolTitle.trim());
+            const unitLabel = protocolUnit.trim() || 'resets';
+
+            const createdGoal = await apiFetch<GoalWithSubtab>('/core/goals/', {
+                method: 'POST',
+                body: JSON.stringify({
+                    pillar_slug: 'mental',
+                    subtab_slug: 'stress-reset',
+                    title: `${PROTOCOL_PREFIX}${rawTitle}`,
+                    cadence: protocolCadence,
+                    target_value: targetVal,
+                    current_value: currentVal,
+                    unit: unitLabel,
+                }),
+            });
+
+            await coreApi
+                .createCheckin({
+                    pillar_slug: 'mental',
+                    subtab_slug: 'stress-reset',
+                    title: `New Reset Protocol: ${rawTitle}`,
+                    note: `${protocolCadence} target: ${targetVal} ${unitLabel}`,
+                    metric_label: 'Protocol added',
+                })
+                .catch(() => null);
+
+            setGoals((prev) => [
+                { ...createdGoal, subtab_slug: createdGoal.subtab_slug ?? 'stress-reset' },
+                ...prev,
+            ]);
+            setProtocolModalOpen(false);
+            await loadData();
+        } catch (err) {
+            setError(
+                err instanceof Error ? err.message : 'Unable to save reset protocol.'
+            );
+        } finally {
+            setCreatingProtocol(false);
+        }
+    };
 
     const mm = String(Math.floor(secondsLeft / 60)).padStart(2, '0');
     const ss = String(secondsLeft % 60).padStart(2, '0');
@@ -124,36 +215,69 @@ export default function StressResetPage() {
 
                     <div className="mt-8 grid grid-cols-1 gap-6 lg:grid-cols-12">
                         <div className="lg:col-span-7">
-                            <h2 className="font-serif text-xl font-semibold text-[#111D18] mb-3.5">
-                                Reset Protocols
-                            </h2>
+                            <div className="flex items-center justify-between gap-3 mb-3.5">
+                                <h2 className="font-serif text-xl font-semibold text-[#111D18]">
+                                    Reset Protocols
+                                </h2>
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        setProtocolTitle('');
+                                        setProtocolCadence('daily');
+                                        setProtocolTarget('3');
+                                        setProtocolCurrent('0');
+                                        setProtocolUnit('resets');
+                                        setProtocolModalOpen(true);
+                                    }}
+                                    className="inline-flex items-center gap-1.5 rounded-lg bg-[#004635] px-3 py-1.5 text-xs font-medium text-white hover:bg-[#1B5E4B] transition"
+                                >
+                                    <Plus className="h-3.5 w-3.5" />
+                                    Add protocol
+                                </button>
+                            </div>
+
                             {goals.length === 0 ? (
                                 <div className="rounded-xl border border-[#BFC9C3]/70 bg-white p-6 text-xs text-[#707974]">
-                                    No stress reset protocols set yet.
+                                    <p>No stress reset protocols set yet.</p>
+                                    <button
+                                        type="button"
+                                        onClick={() => {
+                                            setProtocolTitle('');
+                                            setProtocolCadence('daily');
+                                            setProtocolTarget('3');
+                                            setProtocolCurrent('0');
+                                            setProtocolUnit('resets');
+                                            setProtocolModalOpen(true);
+                                        }}
+                                        className="mt-3 inline-flex items-center gap-1.5 rounded-lg border border-[#004635] px-3 py-1.5 text-xs font-medium text-[#004635] hover:bg-[#F2F6F4]"
+                                    >
+                                        <Plus className="h-3.5 w-3.5" />
+                                        Add protocol
+                                    </button>
                                 </div>
                             ) : (
                                 <div className="space-y-3.5">
-                                    {goals.map((g) => {
+                                    {goals.map((g, idx) => {
                                         const target = Number(g.target_value) || 1;
                                         const current = Number(g.current_value) || 0;
                                         const pct = Math.min(100, Math.max(0, Math.round((current / target) * 100)));
                                         return (
                                             <div
-                                                key={g.id}
+                                                key={g.id ?? idx}
                                                 className="rounded-xl border border-[#BFC9C3]/70 bg-white p-5"
                                             >
                                                 <div className="flex items-start justify-between gap-3">
                                                     <div>
                                                         <div className="text-sm font-semibold text-[#14221C]">
-                                                            {g.title}
+                                                            {cleanGoalTitle(g.title)}
                                                         </div>
                                                         <div className="text-xs text-[#707974] capitalize mt-0.5">
                                                             {g.cadence} reset protocol
                                                         </div>
                                                     </div>
                                                     <span className="font-mono text-xs font-semibold text-[#006B5A]">
-                            {pct}%
-                          </span>
+                                                        {pct}%
+                                                    </span>
                                                 </div>
                                                 <div className="mt-3.5 h-2 w-full overflow-hidden rounded-full bg-[#ECEEEB]">
                                                     <div
@@ -196,8 +320,8 @@ export default function StressResetPage() {
                                                 </div>
                                             </div>
                                             <span className="font-mono text-xs font-semibold text-[#006B5A] shrink-0">
-                        {item.metric_label || 'Reset'}
-                      </span>
+                                                {item.metric_label || 'Reset'}
+                                            </span>
                                         </div>
                                     ))}
                                 </div>
@@ -205,6 +329,115 @@ export default function StressResetPage() {
                         </div>
                     </div>
                 </>
+            )}
+
+            {/* Add Reset Protocol Goal Modal */}
+            {protocolModalOpen && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 px-4">
+                    <div className="w-full max-w-md rounded-2xl border border-[#BFC9C3] bg-white p-6 shadow-lg">
+                        <div className="flex items-center justify-between mb-4">
+                            <h3 className="font-serif text-xl font-semibold text-[#111D18]">
+                                Add reset protocol
+                            </h3>
+                            <button
+                                type="button"
+                                onClick={() => setProtocolModalOpen(false)}
+                                className="rounded-lg p-1 text-[#707974] hover:bg-[#ECEEEB]"
+                            >
+                                <X className="h-4 w-4" />
+                            </button>
+                        </div>
+                        <form onSubmit={handleAddProtocolGoal} className="space-y-4">
+                            <div>
+                                <label className="block text-xs font-medium text-[#14221C] mb-1">
+                                    Protocol Title
+                                </label>
+                                <input
+                                    type="text"
+                                    required
+                                    value={protocolTitle}
+                                    onChange={(e) => setProtocolTitle(e.target.value)}
+                                    placeholder="e.g., Physiological Sigh Reset"
+                                    className="w-full rounded-lg border border-[#BFC9C3] bg-[#F8FAF7] px-3 py-2 text-sm text-[#14221C]"
+                                />
+                            </div>
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                <div>
+                                    <label className="block text-xs font-medium text-[#14221C] mb-1">
+                                        Cadence
+                                    </label>
+                                    <select
+                                        value={protocolCadence}
+                                        onChange={(e) => setProtocolCadence(e.target.value)}
+                                        className="w-full rounded-lg border border-[#BFC9C3] bg-[#F8FAF7] px-3 py-2 text-sm text-[#14221C]"
+                                    >
+                                        <option value="daily">Daily</option>
+                                        <option value="weekly">Weekly</option>
+                                        <option value="monthly">Monthly</option>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label className="block text-xs font-medium text-[#14221C] mb-1">
+                                        Unit
+                                    </label>
+                                    <input
+                                        type="text"
+                                        value={protocolUnit}
+                                        onChange={(e) => setProtocolUnit(e.target.value)}
+                                        placeholder="e.g., resets, cycles"
+                                        className="w-full rounded-lg border border-[#BFC9C3] bg-[#F8FAF7] px-3 py-2 text-sm text-[#14221C]"
+                                    />
+                                </div>
+                            </div>
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                <div>
+                                    <label className="block text-xs font-medium text-[#14221C] mb-1">
+                                        Current Progress
+                                    </label>
+                                    <input
+                                        type="number"
+                                        min={0}
+                                        step="any"
+                                        value={protocolCurrent}
+                                        onChange={(e) => setProtocolCurrent(e.target.value)}
+                                        className="w-full rounded-lg border border-[#BFC9C3] bg-[#F8FAF7] px-3 py-2 text-sm text-[#14221C]"
+                                    />
+                                </div>
+                                <div>
+                                    <label className="block text-xs font-medium text-[#14221C] mb-1">
+                                        Target Value
+                                    </label>
+                                    <input
+                                        type="number"
+                                        min={1}
+                                        step="any"
+                                        required
+                                        value={protocolTarget}
+                                        onChange={(e) => setProtocolTarget(e.target.value)}
+                                        className="w-full rounded-lg border border-[#BFC9C3] bg-[#F8FAF7] px-3 py-2 text-sm text-[#14221C]"
+                                    />
+                                </div>
+                            </div>
+                            <div className="flex justify-end gap-2 pt-2">
+                                <button
+                                    type="button"
+                                    onClick={() => setProtocolModalOpen(false)}
+                                    className="rounded-lg border border-[#BFC9C3] px-4 py-2 text-xs font-medium text-[#2E312F]"
+                                >
+                                    Cancel
+                                </button>
+                                <button
+                                    type="submit"
+                                    disabled={creatingProtocol}
+                                    className="inline-flex items-center gap-1.5 rounded-lg bg-[#004635] px-4 py-2 text-xs font-medium text-white hover:bg-[#1B5E4B] disabled:opacity-60"
+                                >
+                                    {creatingProtocol && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+                                    Save protocol
+                                </button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
             )}
         </MentalShell>
     );

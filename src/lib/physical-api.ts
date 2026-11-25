@@ -13,6 +13,13 @@ export interface PhysicalLogItem {
     date?: string | null;
 }
 
+const EMPTY_PAGINATED_GOALS: PaginatedResponse<PillarGoal> = {
+    count: 0,
+    next: null,
+    previous: null,
+    results: [],
+};
+
 export const physicalApi = {
     getSummary: () => apiFetch<PhysicalSummary>('/physical/summary/'),
 
@@ -46,6 +53,12 @@ export const physicalApi = {
             body: JSON.stringify(payload),
         }),
 
-    getPhysicalGoals: () =>
-        apiFetch<PaginatedResponse<PillarGoal>>('/core/goals/?pillar_slug=physical'),
+    getPhysicalGoals: (subtabSlug?: string) => {
+        const query = subtabSlug
+            ? `/core/goals/?pillar_slug=physical&subtab_slug=${encodeURIComponent(subtabSlug)}`
+            : '/core/goals/?pillar_slug=physical';
+        return apiFetch<PaginatedResponse<PillarGoal>>(query).catch(
+            () => EMPTY_PAGINATED_GOALS
+        );
+    },
 };

@@ -1,9 +1,10 @@
 'use client';
 
-import React, { useCallback, useEffect, useState } from 'react';
-import { Loader2, X } from 'lucide-react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { Loader2, Plus, X } from 'lucide-react';
 import { SpiritualShell } from '@/components/spiritual/SpiritualShell';
 import { useAuth } from '@/context/AuthContext';
+import { apiFetch } from '@/lib/api-client';
 import {
     coreApi,
     PillarCheckin,
@@ -17,6 +18,37 @@ type CheckinWithOptionalDates = PillarCheckin & {
     logged_at?: string | null;
     date?: string | null;
 };
+
+type GoalWithSubtab = PillarGoal & {
+    subtab_slug?: string | null;
+};
+
+const MEDITATION_PREFIX = '[Meditation] ';
+const OTHER_SUBTAB_PREFIXES = ['[Gratitude] ', '[Reading] ', '[Stillness] ', '[Values] '];
+const OTHER_SUBTAB_SLUGS = ['gratitude', 'sacred-reading', 'silence-breath', 'values-purpose'];
+
+function isMeditationGoal(goal: GoalWithSubtab): boolean {
+    if (goal.subtab_slug === 'meditation') return true;
+    if (goal.subtab_slug && OTHER_SUBTAB_SLUGS.includes(goal.subtab_slug)) return false;
+
+    const lowerTitle = goal.title.toLowerCase();
+    if (goal.title.startsWith(MEDITATION_PREFIX)) return true;
+    if (OTHER_SUBTAB_PREFIXES.some((prefix) => goal.title.startsWith(prefix))) return false;
+
+    // Show spiritual goals that belong to meditation/stillness or are untagged spiritual goals
+    return (
+        lowerTitle.includes('meditat') ||
+        lowerTitle.includes('dawn') ||
+        lowerTitle.includes('mindful') ||
+        !goal.title.startsWith('[')
+    );
+}
+
+function cleanGoalTitle(title: string): string {
+    return title.startsWith(MEDITATION_PREFIX)
+        ? title.slice(MEDITATION_PREFIX.length)
+        : title;
+}
 
 function formatCheckinDate(item: CheckinWithOptionalDates): string {
     const raw = item.created_at ?? item.logged_at ?? item.date;
@@ -38,14 +70,24 @@ export default function MeditationPage() {
     const [error, setError] = useState<string | null>(null);
 
     const [summary, setSummary] = useState<SpiritualSummary | null>(null);
-    const [goals, setGoals] = useState<PillarGoal[]>([]);
+    const [allSpiritualGoals, setAllSpiritualGoals] = useState<GoalWithSubtab[]>([]);
     const [checkins, setCheckins] = useState<CheckinWithOptionalDates[]>([]);
 
+    // Practice check-in log modal
     const [modalOpen, setModalOpen] = useState(false);
     const [title, setTitle] = useState('');
     const [durationMins, setDurationMins] = useState('15');
     const [note, setNote] = useState('');
     const [submitting, setSubmitting] = useState(false);
+
+    // Meditation practice goal modal ("Add practice")
+    const [goalModalOpen, setGoalModalOpen] = useState(false);
+    const [goalTitle, setGoalTitle] = useState('');
+    const [goalCadence, setGoalCadence] = useState('daily');
+    const [goalTarget, setGoalTarget] = useState('30');
+    const [goalCurrent, setGoalCurrent] = useState('0');
+    const [goalUnit, setGoalUnit] = useState('sessions');
+    const [creatingGoal, setCreatingGoal] = useState(false);
 
     const loadData = useCallback(async () => {
         if (!user) return;
@@ -68,8 +110,11 @@ export default function MeditationPage() {
                 })),
             ]);
             setSummary(sumRes);
-            setGoals(goalsRes.results);
-            setCheckins(Array.isArray(checkinsRes.results) ? checkinsRes.results : []);
+            setAllSpiritualGoals(Array.isArray(goalsRes.results) ? goalsRes.results : []);
+            const rawCheckins = Array.isArray(checkinsRes.results) ? checkinsRes.results : [];
+            setCheckins(
+                rawCheckins.filter((c) => !c.subtab_slug || c.subtab_slug === 'meditation')
+            );
         } catch (err) {
             setError(
                 err instanceof Error ? err.message : 'Failed to load meditation data.'
@@ -83,10 +128,16 @@ export default function MeditationPage() {
         void loadData();
     }, [loadData]);
 
+    const meditationGoals = useMemo(
+        () => allSpiritualGoals.filter(isMeditationGoal),
+        [allSpiritualGoals]
+    );
+
     const handleLogPractice = async (e: React.FormEvent) => {
         e.preventDefault();
         if (!title.trim()) return;
         setSubmitting(true);
+        setError(null);
         try {
             const mins = Math.max(1, Number(durationMins) || 15);
             await coreApi.createCheckin({
@@ -102,6 +153,55 @@ export default function MeditationPage() {
             setError(err instanceof Error ? err.message : 'Unable to log practice.');
         } finally {
             setSubmitting(false);
+        }
+    };
+
+    const handleAddPracticeGoal = async (e: React.FormEvent) => {
+        e.preventDefault();
+        if (!goalTitle.trim()) return;
+        setCreatingGoal(true);
+        setError(null);
+        try {
+            const targetVal = Math.max(1, Number(goalTarget) || 1);
+            const currentVal = Math.max(0, Number(goalCurrent) || 0);
+            const rawTitle = cleanGoalTitle(goalTitle.trim());
+            const unitLabel = goalUnit.trim() || 'sessions';
+
+            const createdGoal = await apiFetch<GoalWithSubtab>('/core/goals/', {
+                method: 'POST',
+                body: JSON.stringify({
+                    pillar_slug: 'spiritual',
+                    subtab_slug: 'meditation',
+                    title: `${MEDITATION_PREFIX}${rawTitle}`,
+                    cadence: goalCadence,
+                    target_value: targetVal,
+                    current_value: currentVal,
+                    unit: unitLabel,
+                }),
+            });
+
+            await coreApi
+                .createCheckin({
+                    pillar_slug: 'spiritual',
+                    subtab_slug: 'meditation',
+                    title: `New Meditation Practice: ${rawTitle}`,
+                    note: `${goalCadence} target: ${targetVal} ${unitLabel}`,
+                    metric_label: 'Practice added',
+                })
+                .catch(() => null);
+
+            setAllSpiritualGoals((prev) => [
+                { ...createdGoal, subtab_slug: createdGoal.subtab_slug ?? 'meditation' },
+                ...prev,
+            ]);
+            setGoalModalOpen(false);
+            await loadData();
+        } catch (err) {
+            setError(
+                err instanceof Error ? err.message : 'Unable to save meditation practice goal.'
+            );
+        } finally {
+            setCreatingGoal(false);
         }
     };
 
@@ -155,28 +255,61 @@ export default function MeditationPage() {
                         </div>
 
                         <div className="rounded-xl border border-[#BFC9C3]/70 bg-white p-5">
-                            <div className="text-xs text-[#707974]">Practice Logs</div>
+                            <div className="text-xs text-[#707974]">Meditation Goals</div>
                             <div className="mt-2 font-mono text-2xl font-semibold text-[#111D18]">
-                                {checkins.length}
+                                {meditationGoals.length}
                             </div>
                             <div className="mt-1 text-xs text-[#707974]">
-                                Recorded spiritual check-ins
+                                Meditation sub-tab practices
                             </div>
                         </div>
                     </div>
 
                     <div className="mt-8 grid grid-cols-1 gap-6 lg:grid-cols-12">
                         <div className="lg:col-span-7">
-                            <h2 className="font-serif text-xl font-semibold text-[#111D18] mb-3.5">
-                                Spiritual Practices
-                            </h2>
-                            {goals.length === 0 ? (
+                            <div className="flex items-center justify-between gap-3 mb-3.5">
+                                <h2 className="font-serif text-xl font-semibold text-[#111D18]">
+                                    Meditation Practices
+                                </h2>
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        setGoalTitle('');
+                                        setGoalCadence('daily');
+                                        setGoalTarget('30');
+                                        setGoalCurrent('0');
+                                        setGoalUnit('sessions');
+                                        setGoalModalOpen(true);
+                                    }}
+                                    className="inline-flex items-center gap-1.5 rounded-lg bg-[#004635] px-3 py-1.5 text-xs font-medium text-white hover:bg-[#1B5E4B] transition"
+                                >
+                                    <Plus className="h-3.5 w-3.5" />
+                                    Add practice
+                                </button>
+                            </div>
+
+                            {meditationGoals.length === 0 ? (
                                 <div className="rounded-xl border border-[#BFC9C3]/70 bg-white p-6 text-xs text-[#707974]">
-                                    No spiritual practice goals created yet.
+                                    <p>No meditation practice goals created yet.</p>
+                                    <button
+                                        type="button"
+                                        onClick={() => {
+                                            setGoalTitle('');
+                                            setGoalCadence('daily');
+                                            setGoalTarget('30');
+                                            setGoalCurrent('0');
+                                            setGoalUnit('sessions');
+                                            setGoalModalOpen(true);
+                                        }}
+                                        className="mt-3 inline-flex items-center gap-1.5 rounded-lg border border-[#004635] px-3 py-1.5 text-xs font-medium text-[#004635] hover:bg-[#F2F6F4]"
+                                    >
+                                        <Plus className="h-3.5 w-3.5" />
+                                        Add practice
+                                    </button>
                                 </div>
                             ) : (
                                 <div className="space-y-3.5">
-                                    {goals.map((g) => {
+                                    {meditationGoals.map((g, idx) => {
                                         const target = Number(g.target_value) || 1;
                                         const current = Number(g.current_value) || 0;
                                         const pct = Math.min(
@@ -185,21 +318,21 @@ export default function MeditationPage() {
                                         );
                                         return (
                                             <div
-                                                key={g.id}
+                                                key={g.id ?? idx}
                                                 className="rounded-xl border border-[#BFC9C3]/70 bg-white p-5"
                                             >
                                                 <div className="flex items-start justify-between gap-3">
                                                     <div>
                                                         <div className="text-sm font-semibold text-[#14221C]">
-                                                            {g.title}
+                                                            {cleanGoalTitle(g.title)}
                                                         </div>
                                                         <div className="text-xs text-[#707974] capitalize mt-0.5">
-                                                            {g.cadence} spiritual rhythm
+                                                            {g.cadence} meditation rhythm
                                                         </div>
                                                     </div>
                                                     <span className="font-mono text-xs font-semibold text-[#554AB2]">
-                            {pct}%
-                          </span>
+                                                        {pct}%
+                                                    </span>
                                                 </div>
                                                 <div className="mt-3.5 h-2 w-full overflow-hidden rounded-full bg-[#ECEEEB]">
                                                     <div
@@ -223,7 +356,7 @@ export default function MeditationPage() {
                             </h2>
                             {checkins.length === 0 ? (
                                 <div className="rounded-xl border border-[#BFC9C3]/70 bg-white p-6 text-xs text-[#707974]">
-                                    No spiritual practices logged yet.
+                                    No meditation practices logged yet.
                                 </div>
                             ) : (
                                 <div className="rounded-xl border border-[#BFC9C3]/70 bg-white divide-y divide-[#ECEEEB]">
@@ -242,8 +375,8 @@ export default function MeditationPage() {
                                                 </div>
                                             </div>
                                             <span className="font-mono text-xs font-semibold text-[#554AB2] shrink-0">
-                        {item.metric_label || 'Logged'}
-                      </span>
+                                                {item.metric_label || 'Logged'}
+                                            </span>
                                         </div>
                                     ))}
                                 </div>
@@ -253,6 +386,7 @@ export default function MeditationPage() {
                 </>
             )}
 
+            {/* Log Practice Check-In Modal */}
             {modalOpen && (
                 <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 px-4">
                     <div className="w-full max-w-md rounded-2xl border border-[#BFC9C3] bg-white p-6 shadow-lg">
@@ -278,7 +412,7 @@ export default function MeditationPage() {
                                     required
                                     value={title}
                                     onChange={(e) => setTitle(e.target.value)}
-                                    placeholder="e.g., Morning Stillness"
+                                    placeholder="e.g., Dawn Meditation"
                                     className="w-full rounded-lg border border-[#BFC9C3] bg-[#F8FAF7] px-3 py-2 text-sm text-[#14221C]"
                                 />
                             </div>
@@ -323,6 +457,117 @@ export default function MeditationPage() {
                                         <Loader2 className="h-3.5 w-3.5 animate-spin" />
                                     )}
                                     Save
+                                </button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            )}
+
+            {/* Add Meditation Practice Goal Modal */}
+            {goalModalOpen && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 px-4">
+                    <div className="w-full max-w-md rounded-2xl border border-[#BFC9C3] bg-white p-6 shadow-lg">
+                        <div className="flex items-center justify-between mb-4">
+                            <h3 className="font-serif text-xl font-semibold text-[#111D18]">
+                                Add meditation practice
+                            </h3>
+                            <button
+                                type="button"
+                                onClick={() => setGoalModalOpen(false)}
+                                className="rounded-lg p-1 text-[#707974] hover:bg-[#ECEEEB]"
+                            >
+                                <X className="h-4 w-4" />
+                            </button>
+                        </div>
+                        <form onSubmit={handleAddPracticeGoal} className="space-y-4">
+                            <div>
+                                <label className="block text-xs font-medium text-[#14221C] mb-1">
+                                    Practice Goal Title
+                                </label>
+                                <input
+                                    type="text"
+                                    required
+                                    value={goalTitle}
+                                    onChange={(e) => setGoalTitle(e.target.value)}
+                                    placeholder="e.g., Dawn Meditation"
+                                    className="w-full rounded-lg border border-[#BFC9C3] bg-[#F8FAF7] px-3 py-2 text-sm text-[#14221C]"
+                                />
+                            </div>
+                            <div className="grid grid-cols-2 gap-3">
+                                <div>
+                                    <label className="block text-xs font-medium text-[#14221C] mb-1">
+                                        Cadence
+                                    </label>
+                                    <select
+                                        value={goalCadence}
+                                        onChange={(e) => setGoalCadence(e.target.value)}
+                                        className="w-full rounded-lg border border-[#BFC9C3] bg-[#F8FAF7] px-3 py-2 text-sm text-[#14221C]"
+                                    >
+                                        <option value="daily">Daily</option>
+                                        <option value="weekly">Weekly</option>
+                                        <option value="monthly">Monthly</option>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label className="block text-xs font-medium text-[#14221C] mb-1">
+                                        Unit
+                                    </label>
+                                    <input
+                                        type="text"
+                                        value={goalUnit}
+                                        onChange={(e) => setGoalUnit(e.target.value)}
+                                        placeholder="e.g., sessions, mins"
+                                        className="w-full rounded-lg border border-[#BFC9C3] bg-[#F8FAF7] px-3 py-2 text-sm text-[#14221C]"
+                                    />
+                                </div>
+                            </div>
+                            <div className="grid grid-cols-2 gap-3">
+                                <div>
+                                    <label className="block text-xs font-medium text-[#14221C] mb-1">
+                                        Current Progress
+                                    </label>
+                                    <input
+                                        type="number"
+                                        min={0}
+                                        step="any"
+                                        value={goalCurrent}
+                                        onChange={(e) => setGoalCurrent(e.target.value)}
+                                        className="w-full rounded-lg border border-[#BFC9C3] bg-[#F8FAF7] px-3 py-2 text-sm text-[#14221C]"
+                                    />
+                                </div>
+                                <div>
+                                    <label className="block text-xs font-medium text-[#14221C] mb-1">
+                                        Target Value
+                                    </label>
+                                    <input
+                                        type="number"
+                                        min={1}
+                                        step="any"
+                                        required
+                                        value={goalTarget}
+                                        onChange={(e) => setGoalTarget(e.target.value)}
+                                        className="w-full rounded-lg border border-[#BFC9C3] bg-[#F8FAF7] px-3 py-2 text-sm text-[#14221C]"
+                                    />
+                                </div>
+                            </div>
+                            <div className="flex justify-end gap-2 pt-2">
+                                <button
+                                    type="button"
+                                    onClick={() => setGoalModalOpen(false)}
+                                    className="rounded-lg border border-[#BFC9C3] px-4 py-2 text-xs font-medium text-[#2E312F]"
+                                >
+                                    Cancel
+                                </button>
+                                <button
+                                    type="submit"
+                                    disabled={creatingGoal}
+                                    className="inline-flex items-center gap-1.5 rounded-lg bg-[#004635] px-4 py-2 text-xs font-medium text-white hover:bg-[#1B5E4B] disabled:opacity-60"
+                                >
+                                    {creatingGoal && (
+                                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                    )}
+                                    Save practice
                                 </button>
                             </div>
                         </form>

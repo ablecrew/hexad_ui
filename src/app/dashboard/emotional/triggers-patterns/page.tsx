@@ -1,7 +1,7 @@
 'use client';
 
-import React, { useCallback, useEffect, useState } from 'react';
-import { Loader2, X } from 'lucide-react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { Loader2, Plus, X } from 'lucide-react';
 import { EmotionalShell } from '@/components/emotional/EmotionalShell';
 import { useAuth } from '@/context/AuthContext';
 import {
@@ -36,11 +36,22 @@ export default function TriggersPatternsPage() {
     const [goals, setGoals] = useState<PillarGoal[]>([]);
     const [resets, setResets] = useState<CheckinRecord[]>([]);
 
+    // Log trigger event modal state
     const [modalOpen, setModalOpen] = useState(false);
     const [title, setTitle] = useState('');
     const [impactLabel, setImpactLabel] = useState('+1.4');
     const [note, setNote] = useState('');
     const [submitting, setSubmitting] = useState(false);
+
+    // Add pattern counter-habit modal state
+    const [patternModalOpen, setPatternModalOpen] = useState(false);
+    const [patternTitle, setPatternTitle] = useState('');
+    const [patternCadence, setPatternCadence] = useState<'daily' | 'weekly' | 'monthly' | 'quarterly'>('daily');
+    const [patternTargetValue, setPatternTargetValue] = useState('5');
+    const [patternCurrentValue, setPatternCurrentValue] = useState('0');
+    const [patternUnit, setPatternUnit] = useState('resets');
+    const [patternDueDate, setPatternDueDate] = useState('');
+    const [patternSubmitting, setPatternSubmitting] = useState(false);
 
     const loadData = useCallback(async () => {
         if (!user) return;
@@ -66,10 +77,26 @@ export default function TriggersPatternsPage() {
         void loadData();
     }, [loadData]);
 
+    const patternGoals = useMemo(
+        () => goals.filter((g) => g.subtab_slug === 'triggers-patterns'),
+        [goals]
+    );
+
+    const openPatternModal = () => {
+        setPatternTitle('');
+        setPatternCadence('daily');
+        setPatternTargetValue('5');
+        setPatternCurrentValue('0');
+        setPatternUnit('resets');
+        setPatternDueDate('');
+        setPatternModalOpen(true);
+    };
+
     const handleLogTriggerEvent = async (e: React.FormEvent) => {
         e.preventDefault();
         if (!title.trim()) return;
         setSubmitting(true);
+        setError(null);
         try {
             await coreApi.createCheckin({
                 pillar_slug: 'emotional',
@@ -84,6 +111,31 @@ export default function TriggersPatternsPage() {
             setError(err instanceof Error ? err.message : 'Unable to log trigger event.');
         } finally {
             setSubmitting(false);
+        }
+    };
+
+    const handleCreatePatternGoal = async (e: React.FormEvent) => {
+        e.preventDefault();
+        if (!patternTitle.trim()) return;
+        setPatternSubmitting(true);
+        setError(null);
+        try {
+            await coreApi.createGoal({
+                pillar_slug: 'emotional',
+                subtab_slug: 'triggers-patterns',
+                title: patternTitle.trim(),
+                cadence: patternCadence,
+                target_value: Math.max(1, Number(patternTargetValue) || 1),
+                current_value: Math.max(0, Number(patternCurrentValue) || 0),
+                unit: patternUnit.trim() || 'resets',
+                due_date: patternDueDate || null,
+            });
+            setPatternModalOpen(false);
+            await loadData();
+        } catch (err) {
+            setError(err instanceof Error ? err.message : 'Unable to save observed pattern.');
+        } finally {
+            setPatternSubmitting(false);
         }
     };
 
@@ -117,7 +169,7 @@ export default function TriggersPatternsPage() {
                         <div className="rounded-xl border border-[#BFC9C3]/70 bg-white p-5">
                             <div className="text-xs text-[#707974]">Observed Patterns</div>
                             <div className="mt-2 font-mono text-2xl font-semibold text-[#111D18]">
-                                {goals.length}
+                                {patternGoals.length}
                             </div>
                             <div className="mt-1 text-xs text-[#707974]">Active pattern counter-habits</div>
                         </div>
@@ -141,16 +193,34 @@ export default function TriggersPatternsPage() {
 
                     <div className="mt-8 grid grid-cols-1 gap-6 lg:grid-cols-12">
                         <div className="lg:col-span-7">
-                            <h2 className="font-serif text-xl font-semibold text-[#111D18] mb-3.5">
-                                Observed Patterns
-                            </h2>
-                            {goals.length === 0 ? (
+                            <div className="flex items-center justify-between gap-2 mb-3.5">
+                                <h2 className="font-serif text-xl font-semibold text-[#111D18]">
+                                    Observed Patterns
+                                </h2>
+                                <button
+                                    type="button"
+                                    onClick={openPatternModal}
+                                    className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-[#BFC9C3] bg-white px-3 py-1.5 text-xs font-medium text-[#14221C] hover:bg-[#ECEEEB] transition"
+                                >
+                                    <Plus className="h-3.5 w-3.5 text-[#004635]" />
+                                    Add pattern
+                                </button>
+                            </div>
+                            {patternGoals.length === 0 ? (
                                 <div className="rounded-xl border border-[#BFC9C3]/70 bg-white p-6 text-xs text-[#707974]">
-                                    No observed patterns created yet.
+                                    <p>No observed patterns created yet.</p>
+                                    <button
+                                        type="button"
+                                        onClick={openPatternModal}
+                                        className="mt-3 inline-flex items-center gap-1.5 rounded-lg bg-[#004635] px-3.5 py-2 text-xs font-medium text-white hover:bg-[#1B5E4B]"
+                                    >
+                                        <Plus className="h-3.5 w-3.5" />
+                                        Add first pattern
+                                    </button>
                                 </div>
                             ) : (
                                 <div className="space-y-3.5">
-                                    {goals.map((g) => {
+                                    {patternGoals.map((g) => {
                                         const target = Number(g.target_value) || 1;
                                         const current = Number(g.current_value) || 0;
                                         const pct = Math.min(100, Math.max(0, Math.round((current / target) * 100)));
@@ -169,8 +239,8 @@ export default function TriggersPatternsPage() {
                                                         </div>
                                                     </div>
                                                     <span className="font-mono text-xs font-semibold text-[#974722]">
-                            {pct}%
-                          </span>
+                                                        {pct}%
+                                                    </span>
                                                 </div>
                                                 <div className="mt-3.5 h-2 w-full overflow-hidden rounded-full bg-[#ECEEEB]">
                                                     <div
@@ -213,8 +283,8 @@ export default function TriggersPatternsPage() {
                                                 </div>
                                             </div>
                                             <span className="font-mono text-xs font-semibold text-[#974722] shrink-0">
-                        {item.metric_label || 'Reset'}
-                      </span>
+                                                {item.metric_label || 'Reset'}
+                                            </span>
                                         </div>
                                     ))}
                                 </div>
@@ -224,9 +294,141 @@ export default function TriggersPatternsPage() {
                 </>
             )}
 
+            {/* Add Observed Pattern Modal */}
+            {patternModalOpen && (
+                <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/35 p-0 sm:p-4">
+                    <div className="w-full max-w-md max-h-[90vh] overflow-y-auto rounded-t-2xl sm:rounded-2xl border border-[#BFC9C3] bg-white p-5 sm:p-6 shadow-lg">
+                        <div className="flex items-center justify-between mb-4">
+                            <h3 className="font-serif text-xl font-semibold text-[#111D18]">
+                                Add observed pattern
+                            </h3>
+                            <button
+                                type="button"
+                                onClick={() => setPatternModalOpen(false)}
+                                className="rounded-lg p-1 text-[#707974] hover:bg-[#ECEEEB]"
+                            >
+                                <X className="h-4 w-4" />
+                            </button>
+                        </div>
+                        <form onSubmit={handleCreatePatternGoal} className="space-y-4">
+                            <div>
+                                <label className="block text-xs font-medium text-[#14221C] mb-1">
+                                    Pattern or Counter-Habit Title
+                                </label>
+                                <input
+                                    type="text"
+                                    required
+                                    value={patternTitle}
+                                    onChange={(e) => setPatternTitle(e.target.value)}
+                                    placeholder="e.g., 5-minute breath reset after deadline stress"
+                                    className="w-full rounded-lg border border-[#BFC9C3] bg-[#F8FAF7] px-3 py-2 text-sm text-[#14221C]"
+                                />
+                            </div>
+
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                <div>
+                                    <label className="block text-xs font-medium text-[#14221C] mb-1">
+                                        Cadence
+                                    </label>
+                                    <select
+                                        value={patternCadence}
+                                        onChange={(e) =>
+                                            setPatternCadence(
+                                                e.target.value as 'daily' | 'weekly' | 'monthly' | 'quarterly'
+                                            )
+                                        }
+                                        className="w-full rounded-lg border border-[#BFC9C3] bg-[#F8FAF7] px-3 py-2 text-sm text-[#14221C]"
+                                    >
+                                        <option value="daily">Daily</option>
+                                        <option value="weekly">Weekly</option>
+                                        <option value="monthly">Monthly</option>
+                                        <option value="quarterly">Quarterly</option>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label className="block text-xs font-medium text-[#14221C] mb-1">
+                                        Unit
+                                    </label>
+                                    <input
+                                        type="text"
+                                        required
+                                        value={patternUnit}
+                                        onChange={(e) => setPatternUnit(e.target.value)}
+                                        placeholder="e.g., resets, walks"
+                                        className="w-full rounded-lg border border-[#BFC9C3] bg-[#F8FAF7] px-3 py-2 text-sm text-[#14221C]"
+                                    />
+                                </div>
+                            </div>
+
+                            <div className="grid grid-cols-2 gap-3">
+                                <div>
+                                    <label className="block text-xs font-medium text-[#14221C] mb-1">
+                                        Current Value
+                                    </label>
+                                    <input
+                                        type="number"
+                                        min={0}
+                                        step="any"
+                                        required
+                                        value={patternCurrentValue}
+                                        onChange={(e) => setPatternCurrentValue(e.target.value)}
+                                        className="w-full rounded-lg border border-[#BFC9C3] bg-[#F8FAF7] px-3 py-2 text-sm text-[#14221C]"
+                                    />
+                                </div>
+                                <div>
+                                    <label className="block text-xs font-medium text-[#14221C] mb-1">
+                                        Target Value
+                                    </label>
+                                    <input
+                                        type="number"
+                                        min={1}
+                                        step="any"
+                                        required
+                                        value={patternTargetValue}
+                                        onChange={(e) => setPatternTargetValue(e.target.value)}
+                                        className="w-full rounded-lg border border-[#BFC9C3] bg-[#F8FAF7] px-3 py-2 text-sm text-[#14221C]"
+                                    />
+                                </div>
+                            </div>
+
+                            <div>
+                                <label className="block text-xs font-medium text-[#14221C] mb-1">
+                                    Due Date (optional)
+                                </label>
+                                <input
+                                    type="date"
+                                    value={patternDueDate}
+                                    onChange={(e) => setPatternDueDate(e.target.value)}
+                                    className="w-full rounded-lg border border-[#BFC9C3] bg-[#F8FAF7] px-3 py-2 text-sm text-[#14221C]"
+                                />
+                            </div>
+
+                            <div className="flex justify-end gap-2 pt-2">
+                                <button
+                                    type="button"
+                                    onClick={() => setPatternModalOpen(false)}
+                                    className="rounded-lg border border-[#BFC9C3] px-4 py-2 text-xs font-medium text-[#2E312F]"
+                                >
+                                    Cancel
+                                </button>
+                                <button
+                                    type="submit"
+                                    disabled={patternSubmitting}
+                                    className="inline-flex items-center gap-1.5 rounded-lg bg-[#004635] px-4 py-2 text-xs font-medium text-white hover:bg-[#1B5E4B] disabled:opacity-60"
+                                >
+                                    {patternSubmitting && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+                                    Save pattern
+                                </button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            )}
+
+            {/* Log Trigger Event Modal */}
             {modalOpen && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 px-4">
-                    <div className="w-full max-w-md rounded-2xl border border-[#BFC9C3] bg-white p-6 shadow-lg">
+                <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/35 p-0 sm:p-4">
+                    <div className="w-full max-w-md max-h-[90vh] overflow-y-auto rounded-t-2xl sm:rounded-2xl border border-[#BFC9C3] bg-white p-5 sm:p-6 shadow-lg">
                         <div className="flex items-center justify-between mb-4">
                             <h3 className="font-serif text-xl font-semibold text-[#111D18]">
                                 Log trigger event

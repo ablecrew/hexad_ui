@@ -3,13 +3,16 @@ import { EmotionalSummary } from '@/lib/dashboard-api';
 import { PaginatedResponse, PillarGoal } from '@/types/api';
 
 export interface EmotionalLogItem {
-    id: number;
+    id?: number;
     title: string;
+    body?: string;
+    mood_label?: string;
+    mood_score?: number;
     metric_label?: string;
     note?: string;
-    created_at?: string | null;
-    logged_at?: string | null;
-    date?: string | null;
+    created_at?: string;
+    logged_at?: string;
+    date?: string;
 }
 
 export const emotionalApi = {
@@ -22,6 +25,9 @@ export const emotionalApi = {
 
     createJournalEntry: (payload: {
         title: string;
+        body: string;
+        mood_label: string;
+        mood_score: number;
         metric_label?: string;
         note?: string;
     }) =>

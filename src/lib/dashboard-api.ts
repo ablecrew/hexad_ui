@@ -18,7 +18,8 @@ export interface PillarCheckin {
     title: string;
     note?: string;
     metric_label?: string;
-    created_at: string;
+    created_at?: string;
+    logged_at?: string | null;
 }
 
 export interface FinancialSummary {
@@ -96,6 +97,23 @@ export const coreApi = {
     }) =>
         apiFetch<PillarGoal>('/core/goals/', {
             method: 'POST',
+            body: JSON.stringify(payload),
+        }),
+
+    patchGoal: (
+        id: number,
+        payload: Partial<{
+            title: string;
+            cadence: 'daily' | 'weekly' | 'monthly' | 'quarterly';
+            target_value: number;
+            current_value: number;
+            unit: string;
+            status: string;
+            due_date: string | null;
+        }>
+    ) =>
+        apiFetch<PillarGoal>(`/core/goals/${id}/`, {
+            method: 'PATCH',
             body: JSON.stringify(payload),
         }),
 

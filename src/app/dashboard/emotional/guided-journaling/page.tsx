@@ -1,12 +1,20 @@
 'use client';
 
-import React, { useCallback, useEffect, useState } from 'react';
-import { Loader2, NotebookPen, X } from 'lucide-react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { Loader2, NotebookPen, Plus, X } from 'lucide-react';
 import { EmotionalShell } from '@/components/emotional/EmotionalShell';
 import { useAuth } from '@/context/AuthContext';
-import { EmotionalSummary } from '@/lib/dashboard-api';
+import { coreApi, EmotionalSummary } from '@/lib/dashboard-api';
 import { emotionalApi, EmotionalLogItem } from '@/lib/emotional-api';
 import { PillarGoal } from '@/types/api';
+
+const MOOD_PRESETS = [
+    { label: 'Calm', score: 8 },
+    { label: 'Grounded', score: 7 },
+    { label: 'Reflective', score: 6 },
+    { label: 'Low', score: 4 },
+    { label: 'Overwhelmed', score: 3 },
+];
 
 function formatShortDate(item: EmotionalLogItem): string {
     const raw = item.created_at ?? item.logged_at ?? item.date;
@@ -26,11 +34,25 @@ export default function GuidedJournalingPage() {
     const [goals, setGoals] = useState<PillarGoal[]>([]);
     const [entries, setEntries] = useState<EmotionalLogItem[]>([]);
 
+    // New Journal Entry modal state
     const [modalOpen, setModalOpen] = useState(false);
     const [title, setTitle] = useState('');
+    const [body, setBody] = useState('');
+    const [moodLabel, setMoodLabel] = useState('Calm');
+    const [moodScore, setMoodScore] = useState('8');
     const [wordLabel, setWordLabel] = useState('280w');
     const [note, setNote] = useState('');
     const [submitting, setSubmitting] = useState(false);
+
+    // Add Prompt Series modal state
+    const [seriesModalOpen, setSeriesModalOpen] = useState(false);
+    const [seriesTitle, setSeriesTitle] = useState('');
+    const [seriesCadence, setSeriesCadence] = useState<'daily' | 'weekly' | 'monthly' | 'quarterly'>('daily');
+    const [seriesTargetValue, setSeriesTargetValue] = useState('7');
+    const [seriesCurrentValue, setSeriesCurrentValue] = useState('0');
+    const [seriesUnit, setSeriesUnit] = useState('entries');
+    const [seriesDueDate, setSeriesDueDate] = useState('');
+    const [seriesSubmitting, setSeriesSubmitting] = useState(false);
 
     const loadData = useCallback(async () => {
         if (!user) return;
@@ -56,13 +78,33 @@ export default function GuidedJournalingPage() {
         void loadData();
     }, [loadData]);
 
+    const promptSeriesGoals = useMemo(
+        () => goals.filter((g) => g.subtab_slug === 'guided-journaling'),
+        [goals]
+    );
+
+    const openSeriesModal = () => {
+        setSeriesTitle('');
+        setSeriesCadence('daily');
+        setSeriesTargetValue('7');
+        setSeriesCurrentValue('0');
+        setSeriesUnit('entries');
+        setSeriesDueDate('');
+        setSeriesModalOpen(true);
+    };
+
     const handleNewJournalEntry = async (e: React.FormEvent) => {
         e.preventDefault();
-        if (!title.trim()) return;
+        if (!title.trim() || !body.trim() || !moodLabel.trim()) return;
         setSubmitting(true);
+        setError(null);
         try {
+            const parsedScore = Math.max(1, Math.min(10, Number(moodScore) || 5));
             await emotionalApi.createJournalEntry({
                 title: title.trim(),
+                body: body.trim(),
+                mood_label: moodLabel.trim(),
+                mood_score: parsedScore,
                 metric_label: wordLabel.trim() || undefined,
                 note: note.trim() || undefined,
             });
@@ -75,6 +117,31 @@ export default function GuidedJournalingPage() {
         }
     };
 
+    const handleCreatePromptSeries = async (e: React.FormEvent) => {
+        e.preventDefault();
+        if (!seriesTitle.trim()) return;
+        setSeriesSubmitting(true);
+        setError(null);
+        try {
+            await coreApi.createGoal({
+                pillar_slug: 'emotional',
+                subtab_slug: 'guided-journaling',
+                title: seriesTitle.trim(),
+                cadence: seriesCadence,
+                target_value: Math.max(1, Number(seriesTargetValue) || 1),
+                current_value: Math.max(0, Number(seriesCurrentValue) || 0),
+                unit: seriesUnit.trim() || 'entries',
+                due_date: seriesDueDate || null,
+            });
+            setSeriesModalOpen(false);
+            await loadData();
+        } catch (err) {
+            setError(err instanceof Error ? err.message : 'Unable to save prompt series.');
+        } finally {
+            setSeriesSubmitting(false);
+        }
+    };
+
     return (
         <EmotionalShell
             subtitle="Structured reflection prompts, evening wind-down pages, and emotional clarity."
@@ -82,6 +149,9 @@ export default function GuidedJournalingPage() {
             ctaIcon={<NotebookPen className="h-3.5 w-3.5" />}
             onCtaClick={() => {
                 setTitle('');
+                setBody('');
+                setMoodLabel('Calm');
+                setMoodScore('8');
                 setWordLabel('280w');
                 setNote('');
                 setModalOpen(true);
@@ -114,7 +184,7 @@ export default function GuidedJournalingPage() {
                         <div className="rounded-xl border border-[#BFC9C3]/70 bg-white p-5">
                             <div className="text-xs text-[#707974]">Prompt Series</div>
                             <div className="mt-2 font-mono text-2xl font-semibold text-[#111D18]">
-                                {goals.length}
+                                {promptSeriesGoals.length}
                             </div>
                             <div className="mt-1 text-xs text-[#707974]">Active journaling tracks</div>
                         </div>
@@ -130,16 +200,34 @@ export default function GuidedJournalingPage() {
 
                     <div className="mt-8 grid grid-cols-1 gap-6 lg:grid-cols-12">
                         <div className="lg:col-span-7">
-                            <h2 className="font-serif text-xl font-semibold text-[#111D18] mb-3.5">
-                                Active Prompt Series
-                            </h2>
-                            {goals.length === 0 ? (
+                            <div className="flex items-center justify-between gap-2 mb-3.5">
+                                <h2 className="font-serif text-xl font-semibold text-[#111D18]">
+                                    Active Prompt Series
+                                </h2>
+                                <button
+                                    type="button"
+                                    onClick={openSeriesModal}
+                                    className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-[#BFC9C3] bg-white px-3 py-1.5 text-xs font-medium text-[#14221C] hover:bg-[#ECEEEB] transition"
+                                >
+                                    <Plus className="h-3.5 w-3.5 text-[#004635]" />
+                                    Add series
+                                </button>
+                            </div>
+                            {promptSeriesGoals.length === 0 ? (
                                 <div className="rounded-xl border border-[#BFC9C3]/70 bg-white p-6 text-xs text-[#707974]">
-                                    No prompt series created yet.
+                                    <p>No prompt series created yet.</p>
+                                    <button
+                                        type="button"
+                                        onClick={openSeriesModal}
+                                        className="mt-3 inline-flex items-center gap-1.5 rounded-lg bg-[#004635] px-3.5 py-2 text-xs font-medium text-white hover:bg-[#1B5E4B]"
+                                    >
+                                        <Plus className="h-3.5 w-3.5" />
+                                        Add first prompt series
+                                    </button>
                                 </div>
                             ) : (
                                 <div className="space-y-3.5">
-                                    {goals.map((g) => {
+                                    {promptSeriesGoals.map((g) => {
                                         const target = Number(g.target_value) || 1;
                                         const current = Number(g.current_value) || 0;
                                         const pct = Math.min(100, Math.max(0, Math.round((current / target) * 100)));
@@ -158,8 +246,8 @@ export default function GuidedJournalingPage() {
                                                         </div>
                                                     </div>
                                                     <span className="font-mono text-xs font-semibold text-[#974722]">
-                            {pct}%
-                          </span>
+                                                        {pct}%
+                                                    </span>
                                                 </div>
                                                 <div className="mt-3.5 h-2 w-full overflow-hidden rounded-full bg-[#ECEEEB]">
                                                     <div
@@ -198,12 +286,16 @@ export default function GuidedJournalingPage() {
                                                 </div>
                                                 <div className="text-xs text-[#707974] mt-0.5 truncate">
                                                     {formatShortDate(item)}
+                                                    {item.mood_label ? ` · ${item.mood_label}` : ''}
+                                                    {item.mood_score !== undefined && item.mood_score !== null
+                                                        ? ` (${item.mood_score}/10)`
+                                                        : ''}
                                                     {item.note ? ` · ${item.note}` : ''}
                                                 </div>
                                             </div>
                                             <span className="font-mono text-xs font-semibold text-[#974722] shrink-0">
-                        {item.metric_label || 'Entry'}
-                      </span>
+                                                {item.metric_label || 'Entry'}
+                                            </span>
                                         </div>
                                     ))}
                                 </div>
@@ -213,9 +305,141 @@ export default function GuidedJournalingPage() {
                 </>
             )}
 
+            {/* Add Prompt Series Modal */}
+            {seriesModalOpen && (
+                <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/35 p-0 sm:p-4">
+                    <div className="w-full max-w-md max-h-[90vh] overflow-y-auto rounded-t-2xl sm:rounded-2xl border border-[#BFC9C3] bg-white p-5 sm:p-6 shadow-lg">
+                        <div className="flex items-center justify-between mb-4">
+                            <h3 className="font-serif text-xl font-semibold text-[#111D18]">
+                                Add prompt series
+                            </h3>
+                            <button
+                                type="button"
+                                onClick={() => setSeriesModalOpen(false)}
+                                className="rounded-lg p-1 text-[#707974] hover:bg-[#ECEEEB]"
+                            >
+                                <X className="h-4 w-4" />
+                            </button>
+                        </div>
+                        <form onSubmit={handleCreatePromptSeries} className="space-y-4">
+                            <div>
+                                <label className="block text-xs font-medium text-[#14221C] mb-1">
+                                    Prompt Series Title
+                                </label>
+                                <input
+                                    type="text"
+                                    required
+                                    value={seriesTitle}
+                                    onChange={(e) => setSeriesTitle(e.target.value)}
+                                    placeholder="e.g., 7-Day Evening Gratitude Series"
+                                    className="w-full rounded-lg border border-[#BFC9C3] bg-[#F8FAF7] px-3 py-2 text-sm text-[#14221C]"
+                                />
+                            </div>
+
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                <div>
+                                    <label className="block text-xs font-medium text-[#14221C] mb-1">
+                                        Cadence
+                                    </label>
+                                    <select
+                                        value={seriesCadence}
+                                        onChange={(e) =>
+                                            setSeriesCadence(
+                                                e.target.value as 'daily' | 'weekly' | 'monthly' | 'quarterly'
+                                            )
+                                        }
+                                        className="w-full rounded-lg border border-[#BFC9C3] bg-[#F8FAF7] px-3 py-2 text-sm text-[#14221C]"
+                                    >
+                                        <option value="daily">Daily</option>
+                                        <option value="weekly">Weekly</option>
+                                        <option value="monthly">Monthly</option>
+                                        <option value="quarterly">Quarterly</option>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label className="block text-xs font-medium text-[#14221C] mb-1">
+                                        Unit
+                                    </label>
+                                    <input
+                                        type="text"
+                                        required
+                                        value={seriesUnit}
+                                        onChange={(e) => setSeriesUnit(e.target.value)}
+                                        placeholder="e.g., entries, prompts"
+                                        className="w-full rounded-lg border border-[#BFC9C3] bg-[#F8FAF7] px-3 py-2 text-sm text-[#14221C]"
+                                    />
+                                </div>
+                            </div>
+
+                            <div className="grid grid-cols-2 gap-3">
+                                <div>
+                                    <label className="block text-xs font-medium text-[#14221C] mb-1">
+                                        Current Value
+                                    </label>
+                                    <input
+                                        type="number"
+                                        min={0}
+                                        step="any"
+                                        required
+                                        value={seriesCurrentValue}
+                                        onChange={(e) => setSeriesCurrentValue(e.target.value)}
+                                        className="w-full rounded-lg border border-[#BFC9C3] bg-[#F8FAF7] px-3 py-2 text-sm text-[#14221C]"
+                                    />
+                                </div>
+                                <div>
+                                    <label className="block text-xs font-medium text-[#14221C] mb-1">
+                                        Target Value
+                                    </label>
+                                    <input
+                                        type="number"
+                                        min={1}
+                                        step="any"
+                                        required
+                                        value={seriesTargetValue}
+                                        onChange={(e) => setSeriesTargetValue(e.target.value)}
+                                        className="w-full rounded-lg border border-[#BFC9C3] bg-[#F8FAF7] px-3 py-2 text-sm text-[#14221C]"
+                                    />
+                                </div>
+                            </div>
+
+                            <div>
+                                <label className="block text-xs font-medium text-[#14221C] mb-1">
+                                    Due Date (optional)
+                                </label>
+                                <input
+                                    type="date"
+                                    value={seriesDueDate}
+                                    onChange={(e) => setSeriesDueDate(e.target.value)}
+                                    className="w-full rounded-lg border border-[#BFC9C3] bg-[#F8FAF7] px-3 py-2 text-sm text-[#14221C]"
+                                />
+                            </div>
+
+                            <div className="flex justify-end gap-2 pt-2">
+                                <button
+                                    type="button"
+                                    onClick={() => setSeriesModalOpen(false)}
+                                    className="rounded-lg border border-[#BFC9C3] px-4 py-2 text-xs font-medium text-[#2E312F]"
+                                >
+                                    Cancel
+                                </button>
+                                <button
+                                    type="submit"
+                                    disabled={seriesSubmitting}
+                                    className="inline-flex items-center gap-1.5 rounded-lg bg-[#004635] px-4 py-2 text-xs font-medium text-white hover:bg-[#1B5E4B] disabled:opacity-60"
+                                >
+                                    {seriesSubmitting && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+                                    Save series
+                                </button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            )}
+
+            {/* New Journal Entry Modal */}
             {modalOpen && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 px-4">
-                    <div className="w-full max-w-md rounded-2xl border border-[#BFC9C3] bg-white p-6 shadow-lg">
+                <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/35 p-0 sm:p-4">
+                    <div className="w-full max-w-md max-h-[90vh] overflow-y-auto rounded-t-2xl sm:rounded-2xl border border-[#BFC9C3] bg-white p-5 sm:p-6 shadow-lg">
                         <div className="flex items-center justify-between mb-4">
                             <h3 className="font-serif text-xl font-semibold text-[#111D18]">
                                 New journal entry
@@ -242,28 +466,91 @@ export default function GuidedJournalingPage() {
                                     className="w-full rounded-lg border border-[#BFC9C3] bg-[#F8FAF7] px-3 py-2 text-sm text-[#14221C]"
                                 />
                             </div>
-                            <div>
-                                <label className="block text-xs font-medium text-[#14221C] mb-1">
-                                    Length / Tag Label
-                                </label>
-                                <input
-                                    type="text"
-                                    value={wordLabel}
-                                    onChange={(e) => setWordLabel(e.target.value)}
-                                    className="w-full rounded-lg border border-[#BFC9C3] bg-[#F8FAF7] px-3 py-2 text-sm text-[#14221C]"
-                                />
+
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                <div>
+                                    <label className="block text-xs font-medium text-[#14221C] mb-1">
+                                        Mood Label
+                                    </label>
+                                    <input
+                                        type="text"
+                                        required
+                                        list="mood-label-options"
+                                        value={moodLabel}
+                                        onChange={(e) => {
+                                            const val = e.target.value;
+                                            setMoodLabel(val);
+                                            const preset = MOOD_PRESETS.find(
+                                                (m) => m.label.toLowerCase() === val.trim().toLowerCase()
+                                            );
+                                            if (preset) {
+                                                setMoodScore(String(preset.score));
+                                            }
+                                        }}
+                                        placeholder="e.g., Calm"
+                                        className="w-full rounded-lg border border-[#BFC9C3] bg-[#F8FAF7] px-3 py-2 text-sm text-[#14221C]"
+                                    />
+                                    <datalist id="mood-label-options">
+                                        {MOOD_PRESETS.map((m) => (
+                                            <option key={m.label} value={m.label} />
+                                        ))}
+                                    </datalist>
+                                </div>
+                                <div>
+                                    <label className="block text-xs font-medium text-[#14221C] mb-1">
+                                        Mood Score (1–10)
+                                    </label>
+                                    <input
+                                        type="number"
+                                        min={1}
+                                        max={10}
+                                        required
+                                        value={moodScore}
+                                        onChange={(e) => setMoodScore(e.target.value)}
+                                        className="w-full rounded-lg border border-[#BFC9C3] bg-[#F8FAF7] px-3 py-2 text-sm text-[#14221C]"
+                                    />
+                                </div>
                             </div>
+
                             <div>
                                 <label className="block text-xs font-medium text-[#14221C] mb-1">
-                                    Reflection Note (optional)
+                                    Journal Entry
                                 </label>
                                 <textarea
-                                    rows={2}
-                                    value={note}
-                                    onChange={(e) => setNote(e.target.value)}
+                                    rows={4}
+                                    required
+                                    value={body}
+                                    onChange={(e) => setBody(e.target.value)}
+                                    placeholder="Write your reflection..."
                                     className="w-full rounded-lg border border-[#BFC9C3] bg-[#F8FAF7] px-3 py-2 text-sm text-[#14221C]"
                                 />
                             </div>
+
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                <div>
+                                    <label className="block text-xs font-medium text-[#14221C] mb-1">
+                                        Length / Tag Label
+                                    </label>
+                                    <input
+                                        type="text"
+                                        value={wordLabel}
+                                        onChange={(e) => setWordLabel(e.target.value)}
+                                        className="w-full rounded-lg border border-[#BFC9C3] bg-[#F8FAF7] px-3 py-2 text-sm text-[#14221C]"
+                                    />
+                                </div>
+                                <div>
+                                    <label className="block text-xs font-medium text-[#14221C] mb-1">
+                                        Reflection Note (optional)
+                                    </label>
+                                    <input
+                                        type="text"
+                                        value={note}
+                                        onChange={(e) => setNote(e.target.value)}
+                                        className="w-full rounded-lg border border-[#BFC9C3] bg-[#F8FAF7] px-3 py-2 text-sm text-[#14221C]"
+                                    />
+                                </div>
+                            </div>
+
                             <div className="flex justify-end gap-2 pt-2">
                                 <button
                                     type="button"
