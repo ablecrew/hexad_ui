@@ -11,6 +11,43 @@ import {
     SkillTrackItem,
 } from '@/lib/academics-api';
 
+type SkillMasteryCache = {
+    summary: AcademicsSummary | null;
+    skillTracks: SkillTrackItem[];
+    sessions: ExamPrepSessionItem[];
+};
+
+const CACHE_TTL_MS = 10 * 60 * 1000;
+
+function getCacheKey(userId?: string | number | null): string | null {
+    if (!userId) return null;
+    return `hexad:academics:skill-mastery:${userId}`;
+}
+
+function readCache(key: string | null): SkillMasteryCache | null {
+    if (!key || typeof window === 'undefined') return null;
+    try {
+        const raw = window.localStorage.getItem(key);
+        if (!raw) return null;
+        const parsed = JSON.parse(raw) as { data?: SkillMasteryCache; savedAt?: number };
+        if (typeof parsed.savedAt !== 'number' || Date.now() - parsed.savedAt > CACHE_TTL_MS) {
+            return null;
+        }
+        return parsed.data ?? null;
+    } catch {
+        return null;
+    }
+}
+
+function writeCache(key: string | null, data: SkillMasteryCache): void {
+    if (!key || typeof window === 'undefined') return;
+    try {
+        window.localStorage.setItem(key, JSON.stringify({ data, savedAt: Date.now() }));
+    } catch {
+        // Ignore storage quota or private-mode errors
+    }
+}
+
 function formatDurationHm(totalMins: number): string {
     const safe = Math.max(0, Math.round(totalMins));
     const hrs = Math.floor(safe / 60);
@@ -21,12 +58,29 @@ function formatDurationHm(totalMins: number): string {
 
 export default function SkillMasteryPage() {
     const { user } = useAuth();
-    const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
+    const userId = user?.id;
+    const cacheKey = getCacheKey(userId);
+    const initialCache = readCache(cacheKey);
 
-    const [summary, setSummary] = useState<AcademicsSummary | null>(null);
-    const [skillTracks, setSkillTracks] = useState<SkillTrackItem[]>([]);
-    const [sessions, setSessions] = useState<ExamPrepSessionItem[]>([]);
+    const [summary, setSummary] = useState<AcademicsSummary | null>(
+        () => initialCache?.summary ?? null
+    );
+    const [skillTracks, setSkillTracks] = useState<SkillTrackItem[]>(
+        () => initialCache?.skillTracks ?? []
+    );
+    const [sessions, setSessions] = useState<ExamPrepSessionItem[]>(
+        () => initialCache?.sessions ?? []
+    );
+
+    const hasCachedData = Boolean(
+        initialCache &&
+        (initialCache.summary ||
+            initialCache.skillTracks.length > 0 ||
+            initialCache.sessions.length > 0)
+    );
+
+    const [loading, setLoading] = useState<boolean>(() => !hasCachedData);
+    const [error, setError] = useState<string | null>(null);
 
     const [modalOpen, setModalOpen] = useState(false);
     const [skillName, setSkillName] = useState('');
@@ -35,24 +89,52 @@ export default function SkillMasteryPage() {
     const [submitting, setSubmitting] = useState(false);
 
     const loadData = useCallback(async () => {
-        if (!user) return;
-        setLoading(true);
+        if (!userId) return;
+        const activeKey = getCacheKey(userId);
+        const cached = readCache(activeKey);
+
+        if (cached) {
+            setSummary((prev) => prev ?? cached.summary ?? null);
+            setSkillTracks((prev) => (prev.length > 0 ? prev : cached.skillTracks ?? []));
+            setSessions((prev) => (prev.length > 0 ? prev : cached.sessions ?? []));
+        }
+
+        const hasAnyExistingData = Boolean(
+            cached &&
+            (cached.summary ||
+                cached.skillTracks.length > 0 ||
+                cached.sessions.length > 0)
+        );
+        if (!hasAnyExistingData) {
+            setLoading(true);
+        }
         setError(null);
+
         try {
             const [sumRes, skillsRes, sessRes] = await Promise.all([
                 academicsApi.getSummary().catch(() => null),
                 academicsApi.getSkillTracks().catch(() => ({ count: 0, next: null, previous: null, results: [] })),
                 academicsApi.getExamPrepSessions().catch(() => ({ count: 0, next: null, previous: null, results: [] })),
             ]);
+
+            const nextSkillTracks = Array.isArray(skillsRes.results) ? skillsRes.results : [];
+            const nextSessions = Array.isArray(sessRes.results) ? sessRes.results : [];
+
             setSummary(sumRes);
-            setSkillTracks(skillsRes.results);
-            setSessions(sessRes.results);
+            setSkillTracks(nextSkillTracks);
+            setSessions(nextSessions);
+
+            writeCache(activeKey, {
+                summary: sumRes,
+                skillTracks: nextSkillTracks,
+                sessions: nextSessions,
+            });
         } catch (err) {
             setError(err instanceof Error ? err.message : 'Failed to load skill mastery.');
         } finally {
             setLoading(false);
         }
-    }, [user]);
+    }, [userId]);
 
     useEffect(() => {
         void loadData();
@@ -165,8 +247,8 @@ export default function SkillMasteryPage() {
                                                         </div>
                                                     </div>
                                                     <span className="font-mono text-xs font-semibold text-[#00629F]">
-                            {pct}%
-                          </span>
+                                                        {pct}%
+                                                    </span>
                                                 </div>
                                                 <div className="mt-3.5 h-2 w-full overflow-hidden rounded-full bg-[#ECEEEB]">
                                                     <div
@@ -205,10 +287,10 @@ export default function SkillMasteryPage() {
                                                 </div>
                                             </div>
                                             <span className="font-mono text-xs font-semibold text-[#00629F] shrink-0">
-                        {s.mock_score_pct !== null && s.mock_score_pct !== undefined
-                            ? `${s.mock_score_pct}%`
-                            : 'Logged'}
-                      </span>
+                                                {s.mock_score_pct !== null && s.mock_score_pct !== undefined
+                                                    ? `${s.mock_score_pct}%`
+                                                    : 'Logged'}
+                                            </span>
                                         </div>
                                     ))}
                                 </div>

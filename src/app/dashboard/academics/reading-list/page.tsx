@@ -6,11 +6,55 @@ import { AcademicsShell } from '@/components/academics/AcademicsShell';
 import { useAuth } from '@/context/AuthContext';
 import { academicsApi, ReadingItem } from '@/lib/academics-api';
 
+type ReadingListCache = {
+    readingItems: ReadingItem[];
+};
+
+const CACHE_TTL_MS = 10 * 60 * 1000;
+
+function getCacheKey(userId?: string | number | null): string | null {
+    if (!userId) return null;
+    return `hexad:academics:reading-list:${userId}`;
+}
+
+function readCache(key: string | null): ReadingListCache | null {
+    if (!key || typeof window === 'undefined') return null;
+    try {
+        const raw = window.localStorage.getItem(key);
+        if (!raw) return null;
+        const parsed = JSON.parse(raw) as { data?: ReadingListCache; savedAt?: number };
+        if (typeof parsed.savedAt !== 'number' || Date.now() - parsed.savedAt > CACHE_TTL_MS) {
+            return null;
+        }
+        return parsed.data ?? null;
+    } catch {
+        return null;
+    }
+}
+
+function writeCache(key: string | null, data: ReadingListCache): void {
+    if (!key || typeof window === 'undefined') return;
+    try {
+        window.localStorage.setItem(key, JSON.stringify({ data, savedAt: Date.now() }));
+    } catch {
+        // Ignore storage quota or private-mode errors
+    }
+}
+
 export default function ReadingListPage() {
     const { user } = useAuth();
-    const [loading, setLoading] = useState(true);
+    const userId = user?.id;
+    const cacheKey = getCacheKey(userId);
+    const initialCache = readCache(cacheKey);
+
+    const [readingItems, setReadingItems] = useState<ReadingItem[]>(
+        () => initialCache?.readingItems ?? []
+    );
+
+    const hasCachedData = Boolean(initialCache && initialCache.readingItems.length > 0);
+
+    const [loading, setLoading] = useState<boolean>(() => !hasCachedData);
     const [error, setError] = useState<string | null>(null);
-    const [readingItems, setReadingItems] = useState<ReadingItem[]>([]);
 
     const [modalOpen, setModalOpen] = useState(false);
     const [title, setTitle] = useState('');
@@ -20,20 +64,33 @@ export default function ReadingListPage() {
     const [submitting, setSubmitting] = useState(false);
 
     const loadData = useCallback(async () => {
-        if (!user) return;
-        setLoading(true);
+        if (!userId) return;
+        const activeKey = getCacheKey(userId);
+        const cached = readCache(activeKey);
+
+        if (cached && cached.readingItems.length > 0) {
+            setReadingItems((prev) => (prev.length > 0 ? prev : cached.readingItems));
+        }
+
+        const hasAnyExistingData = Boolean(cached && cached.readingItems.length > 0);
+        if (!hasAnyExistingData) {
+            setLoading(true);
+        }
         setError(null);
+
         try {
             const res = await academicsApi
                 .getReadingItems()
                 .catch(() => ({ count: 0, next: null, previous: null, results: [] }));
-            setReadingItems(res.results);
+            const nextItems = Array.isArray(res.results) ? res.results : [];
+            setReadingItems(nextItems);
+            writeCache(activeKey, { readingItems: nextItems });
         } catch (err) {
             setError(err instanceof Error ? err.message : 'Failed to load reading list.');
         } finally {
             setLoading(false);
         }
-    }, [user]);
+    }, [userId]);
 
     useEffect(() => {
         void loadData();
@@ -179,8 +236,8 @@ export default function ReadingListPage() {
                                                         </div>
                                                     </div>
                                                     <span className="font-mono text-xs font-semibold text-[#00629F]">
-                            {pct}%
-                          </span>
+                                                        {pct}%
+                                                    </span>
                                                 </div>
                                                 <div className="mt-3.5 h-2 w-full overflow-hidden rounded-full bg-[#ECEEEB]">
                                                     <div
@@ -222,8 +279,8 @@ export default function ReadingListPage() {
                                                 </div>
                                             </div>
                                             <span className="font-mono text-xs font-semibold text-[#00629F] capitalize shrink-0">
-                        {book.status === 'completed' ? 'Done' : book.status}
-                      </span>
+                                                {book.status === 'completed' ? 'Done' : book.status}
+                                            </span>
                                         </div>
                                     ))}
                                 </div>

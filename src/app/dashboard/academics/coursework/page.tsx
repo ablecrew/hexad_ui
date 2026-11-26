@@ -11,6 +11,43 @@ import {
     CourseItem,
 } from '@/lib/academics-api';
 
+type CourseworkCache = {
+    summary: AcademicsSummary | null;
+    courses: CourseItem[];
+    assignments: AssignmentItem[];
+};
+
+const CACHE_TTL_MS = 10 * 60 * 1000;
+
+function getCacheKey(userId?: string | number | null): string | null {
+    if (!userId) return null;
+    return `hexad:academics:coursework:${userId}`;
+}
+
+function readCache(key: string | null): CourseworkCache | null {
+    if (!key || typeof window === 'undefined') return null;
+    try {
+        const raw = window.localStorage.getItem(key);
+        if (!raw) return null;
+        const parsed = JSON.parse(raw) as { data?: CourseworkCache; savedAt?: number };
+        if (typeof parsed.savedAt !== 'number' || Date.now() - parsed.savedAt > CACHE_TTL_MS) {
+            return null;
+        }
+        return parsed.data ?? null;
+    } catch {
+        return null;
+    }
+}
+
+function writeCache(key: string | null, data: CourseworkCache): void {
+    if (!key || typeof window === 'undefined') return;
+    try {
+        window.localStorage.setItem(key, JSON.stringify({ data, savedAt: Date.now() }));
+    } catch {
+        // Ignore storage quota or private-mode errors
+    }
+}
+
 function formatGradeLetter(pct: number | null): string {
     if (pct === null || Number.isNaN(pct)) return '—';
     if (pct >= 93) return 'A';
@@ -32,12 +69,23 @@ function formatGpaFromPct(pct: number | null): string {
 
 export default function CourseworkPage() {
     const { user } = useAuth();
-    const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
+    const userId = user?.id;
+    const cacheKey = getCacheKey(userId);
+    const initialCache = readCache(cacheKey);
 
-    const [summary, setSummary] = useState<AcademicsSummary | null>(null);
-    const [courses, setCourses] = useState<CourseItem[]>([]);
-    const [assignments, setAssignments] = useState<AssignmentItem[]>([]);
+    const [summary, setSummary] = useState<AcademicsSummary | null>(() => initialCache?.summary ?? null);
+    const [courses, setCourses] = useState<CourseItem[]>(() => initialCache?.courses ?? []);
+    const [assignments, setAssignments] = useState<AssignmentItem[]>(() => initialCache?.assignments ?? []);
+
+    const hasCachedData = Boolean(
+        initialCache &&
+        (initialCache.summary ||
+            initialCache.courses.length > 0 ||
+            initialCache.assignments.length > 0)
+    );
+
+    const [loading, setLoading] = useState<boolean>(() => !hasCachedData);
+    const [error, setError] = useState<string | null>(null);
 
     // Add Course modal state
     const [courseModalOpen, setCourseModalOpen] = useState(false);
@@ -50,7 +98,9 @@ export default function CourseworkPage() {
 
     // Add Assignment modal state
     const [modalOpen, setModalOpen] = useState(false);
-    const [courseId, setCourseId] = useState<string>('');
+    const [courseId, setCourseId] = useState<string>(() =>
+        initialCache?.courses?.[0] ? String(initialCache.courses[0].id) : ''
+    );
     const [title, setTitle] = useState('');
     const [weightPct, setWeightPct] = useState('');
     const [scorePct, setScorePct] = useState('');
@@ -58,27 +108,59 @@ export default function CourseworkPage() {
     const [submitting, setSubmitting] = useState(false);
 
     const loadData = useCallback(async () => {
-        if (!user) return;
-        setLoading(true);
+        if (!userId) return;
+        const activeKey = getCacheKey(userId);
+        const cached = readCache(activeKey);
+
+        if (cached) {
+            setSummary((prev) => prev ?? cached.summary ?? null);
+            setCourses((prev) => (prev.length > 0 ? prev : cached.courses ?? []));
+            setAssignments((prev) => (prev.length > 0 ? prev : cached.assignments ?? []));
+            if (cached.courses?.[0]) {
+                setCourseId((prev) => prev || String(cached.courses[0].id));
+            }
+        }
+
+        const hasAnyExistingData = Boolean(
+            cached &&
+            (cached.summary ||
+                cached.courses.length > 0 ||
+                cached.assignments.length > 0)
+        );
+        if (!hasAnyExistingData) {
+            setLoading(true);
+        }
         setError(null);
+
         try {
             const [sumRes, coursesRes, assignRes] = await Promise.all([
                 academicsApi.getSummary().catch(() => null),
                 academicsApi.getCourses().catch(() => ({ count: 0, next: null, previous: null, results: [] })),
                 academicsApi.getAssignments().catch(() => ({ count: 0, next: null, previous: null, results: [] })),
             ]);
+
+            const nextCourses = Array.isArray(coursesRes.results) ? coursesRes.results : [];
+            const nextAssignments = Array.isArray(assignRes.results) ? assignRes.results : [];
+
             setSummary(sumRes);
-            setCourses(coursesRes.results);
-            setAssignments(assignRes.results);
-            if (coursesRes.results.length > 0) {
-                setCourseId((prev) => prev || String(coursesRes.results[0].id));
+            setCourses(nextCourses);
+            setAssignments(nextAssignments);
+
+            if (nextCourses.length > 0) {
+                setCourseId((prev) => prev || String(nextCourses[0].id));
             }
+
+            writeCache(activeKey, {
+                summary: sumRes,
+                courses: nextCourses,
+                assignments: nextAssignments,
+            });
         } catch (err) {
             setError(err instanceof Error ? err.message : 'Failed to load coursework.');
         } finally {
             setLoading(false);
         }
-    }, [user]);
+    }, [userId]);
 
     useEffect(() => {
         void loadData();

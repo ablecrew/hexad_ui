@@ -12,6 +12,44 @@ import {
 } from '@/lib/academics-api';
 import { PillarGoal } from '@/types/api';
 
+type ExamPrepCache = {
+    summary: AcademicsSummary | null;
+    courses: CourseItem[];
+    sessions: ExamPrepSessionItem[];
+    goals: PillarGoal[];
+};
+
+const CACHE_TTL_MS = 10 * 60 * 1000;
+
+function getCacheKey(userId?: string | number | null): string | null {
+    if (!userId) return null;
+    return `hexad:academics:exam-prep:${userId}`;
+}
+
+function readCache(key: string | null): ExamPrepCache | null {
+    if (!key || typeof window === 'undefined') return null;
+    try {
+        const raw = window.localStorage.getItem(key);
+        if (!raw) return null;
+        const parsed = JSON.parse(raw) as { data?: ExamPrepCache; savedAt?: number };
+        if (typeof parsed.savedAt !== 'number' || Date.now() - parsed.savedAt > CACHE_TTL_MS) {
+            return null;
+        }
+        return parsed.data ?? null;
+    } catch {
+        return null;
+    }
+}
+
+function writeCache(key: string | null, data: ExamPrepCache): void {
+    if (!key || typeof window === 'undefined') return;
+    try {
+        window.localStorage.setItem(key, JSON.stringify({ data, savedAt: Date.now() }));
+    } catch {
+        // Ignore storage quota or private-mode errors
+    }
+}
+
 function formatDurationHm(totalMins: number): string {
     const safe = Math.max(0, Math.round(totalMins));
     const hrs = Math.floor(safe / 60);
@@ -22,16 +60,30 @@ function formatDurationHm(totalMins: number): string {
 
 export default function ExamPrepPage() {
     const { user } = useAuth();
-    const [loading, setLoading] = useState(true);
+    const userId = user?.id;
+    const cacheKey = getCacheKey(userId);
+    const initialCache = readCache(cacheKey);
+
+    const [summary, setSummary] = useState<AcademicsSummary | null>(() => initialCache?.summary ?? null);
+    const [courses, setCourses] = useState<CourseItem[]>(() => initialCache?.courses ?? []);
+    const [sessions, setSessions] = useState<ExamPrepSessionItem[]>(() => initialCache?.sessions ?? []);
+    const [goals, setGoals] = useState<PillarGoal[]>(() => initialCache?.goals ?? []);
+
+    const hasCachedData = Boolean(
+        initialCache &&
+        (initialCache.summary ||
+            initialCache.courses.length > 0 ||
+            initialCache.sessions.length > 0 ||
+            initialCache.goals.length > 0)
+    );
+
+    const [loading, setLoading] = useState<boolean>(() => !hasCachedData);
     const [error, setError] = useState<string | null>(null);
 
-    const [summary, setSummary] = useState<AcademicsSummary | null>(null);
-    const [courses, setCourses] = useState<CourseItem[]>([]);
-    const [sessions, setSessions] = useState<ExamPrepSessionItem[]>([]);
-    const [goals, setGoals] = useState<PillarGoal[]>([]);
-
     const [modalOpen, setModalOpen] = useState(false);
-    const [courseId, setCourseId] = useState<string>('');
+    const [courseId, setCourseId] = useState<string>(() =>
+        initialCache?.courses?.[0] ? String(initialCache.courses[0].id) : ''
+    );
     const [topic, setTopic] = useState('');
     const [durationMins, setDurationMins] = useState('60');
     const [mockScorePct, setMockScorePct] = useState('');
@@ -39,9 +91,32 @@ export default function ExamPrepPage() {
     const [submitting, setSubmitting] = useState(false);
 
     const loadData = useCallback(async () => {
-        if (!user) return;
-        setLoading(true);
+        if (!userId) return;
+        const activeKey = getCacheKey(userId);
+        const cached = readCache(activeKey);
+
+        if (cached) {
+            setSummary((prev) => prev ?? cached.summary ?? null);
+            setCourses((prev) => (prev.length > 0 ? prev : cached.courses ?? []));
+            setSessions((prev) => (prev.length > 0 ? prev : cached.sessions ?? []));
+            setGoals((prev) => (prev.length > 0 ? prev : cached.goals ?? []));
+            if (cached.courses?.[0]) {
+                setCourseId((prev) => prev || String(cached.courses[0].id));
+            }
+        }
+
+        const hasAnyExistingData = Boolean(
+            cached &&
+            (cached.summary ||
+                cached.courses.length > 0 ||
+                cached.sessions.length > 0 ||
+                cached.goals.length > 0)
+        );
+        if (!hasAnyExistingData) {
+            setLoading(true);
+        }
         setError(null);
+
         try {
             const [sumRes, coursesRes, sessRes, goalsRes] = await Promise.all([
                 academicsApi.getSummary().catch(() => null),
@@ -49,19 +124,32 @@ export default function ExamPrepPage() {
                 academicsApi.getExamPrepSessions().catch(() => ({ count: 0, next: null, previous: null, results: [] })),
                 academicsApi.getAcademicGoals().catch(() => ({ count: 0, next: null, previous: null, results: [] })),
             ]);
+
+            const nextCourses = Array.isArray(coursesRes.results) ? coursesRes.results : [];
+            const nextSessions = Array.isArray(sessRes.results) ? sessRes.results : [];
+            const nextGoals = Array.isArray(goalsRes.results) ? goalsRes.results : [];
+
             setSummary(sumRes);
-            setCourses(coursesRes.results);
-            setSessions(sessRes.results);
-            setGoals(goalsRes.results);
-            if (coursesRes.results.length > 0) {
-                setCourseId((prev) => prev || String(coursesRes.results[0].id));
+            setCourses(nextCourses);
+            setSessions(nextSessions);
+            setGoals(nextGoals);
+
+            if (nextCourses.length > 0) {
+                setCourseId((prev) => prev || String(nextCourses[0].id));
             }
+
+            writeCache(activeKey, {
+                summary: sumRes,
+                courses: nextCourses,
+                sessions: nextSessions,
+                goals: nextGoals,
+            });
         } catch (err) {
             setError(err instanceof Error ? err.message : 'Failed to load exam prep.');
         } finally {
             setLoading(false);
         }
-    }, [user]);
+    }, [userId]);
 
     useEffect(() => {
         void loadData();
@@ -192,8 +280,8 @@ export default function ExamPrepPage() {
                                                         </div>
                                                     </div>
                                                     <span className="font-mono text-xs font-semibold text-[#00629F]">
-                            {pct}% ready
-                          </span>
+                                                        {pct}% ready
+                                                    </span>
                                                 </div>
                                                 <div className="mt-3.5 h-2 w-full overflow-hidden rounded-full bg-[#ECEEEB]">
                                                     <div
@@ -232,10 +320,10 @@ export default function ExamPrepPage() {
                                                 </div>
                                             </div>
                                             <span className="font-mono text-xs font-semibold text-[#00629F] shrink-0">
-                        {s.mock_score_pct !== null && s.mock_score_pct !== undefined
-                            ? `${s.mock_score_pct}%`
-                            : 'Completed'}
-                      </span>
+                                                {s.mock_score_pct !== null && s.mock_score_pct !== undefined
+                                                    ? `${s.mock_score_pct}%`
+                                                    : 'Completed'}
+                                            </span>
                                         </div>
                                     ))}
                                 </div>

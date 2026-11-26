@@ -12,6 +12,50 @@ import {
 import { coreApi, PillarCheckin } from '@/lib/dashboard-api';
 import { PillarGoal, UserStreak } from '@/types/api';
 
+type CheckinWithLoggedAt = PillarCheckin & {
+    logged_at?: string | null;
+    created_at?: string | null;
+};
+
+type StudySessionsCache = {
+    streak: UserStreak | null;
+    summary: AcademicsSummary | null;
+    goals: PillarGoal[];
+    checkins: CheckinWithLoggedAt[];
+    readingItems: ReadingItem[];
+};
+
+const CACHE_TTL_MS = 10 * 60 * 1000;
+
+function getCacheKey(userId?: string | number | null): string | null {
+    if (!userId) return null;
+    return `hexad:academics:study-sessions:${userId}`;
+}
+
+function readCache(key: string | null): StudySessionsCache | null {
+    if (!key || typeof window === 'undefined') return null;
+    try {
+        const raw = window.localStorage.getItem(key);
+        if (!raw) return null;
+        const parsed = JSON.parse(raw) as { data?: StudySessionsCache; savedAt?: number };
+        if (typeof parsed.savedAt !== 'number' || Date.now() - parsed.savedAt > CACHE_TTL_MS) {
+            return null;
+        }
+        return parsed.data ?? null;
+    } catch {
+        return null;
+    }
+}
+
+function writeCache(key: string | null, data: StudySessionsCache): void {
+    if (!key || typeof window === 'undefined') return;
+    try {
+        window.localStorage.setItem(key, JSON.stringify({ data, savedAt: Date.now() }));
+    } catch {
+        // Ignore storage quota or private-mode errors
+    }
+}
+
 function formatDurationHm(totalMins: number): string {
     const safe = Math.max(0, Math.round(totalMins));
     const hrs = Math.floor(safe / 60);
@@ -20,16 +64,34 @@ function formatDurationHm(totalMins: number): string {
     return `${hrs}h ${String(mins).padStart(2, '0')}m`;
 }
 
+function getCheckinDateLabel(item: CheckinWithLoggedAt): string {
+    const raw = item.logged_at ?? item.created_at;
+    return raw ? String(raw).slice(0, 10) : '';
+}
+
 export default function StudySessionsPage() {
     const { user } = useAuth();
-    const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
+    const userId = user?.id;
+    const cacheKey = getCacheKey(userId);
+    const initialCache = readCache(cacheKey);
 
-    const [streak, setStreak] = useState<UserStreak | null>(null);
-    const [summary, setSummary] = useState<AcademicsSummary | null>(null);
-    const [goals, setGoals] = useState<PillarGoal[]>([]);
-    const [checkins, setCheckins] = useState<PillarCheckin[]>([]);
-    const [readingItems, setReadingItems] = useState<ReadingItem[]>([]);
+    const [streak, setStreak] = useState<UserStreak | null>(() => initialCache?.streak ?? null);
+    const [summary, setSummary] = useState<AcademicsSummary | null>(() => initialCache?.summary ?? null);
+    const [goals, setGoals] = useState<PillarGoal[]>(() => initialCache?.goals ?? []);
+    const [checkins, setCheckins] = useState<CheckinWithLoggedAt[]>(() => initialCache?.checkins ?? []);
+    const [readingItems, setReadingItems] = useState<ReadingItem[]>(() => initialCache?.readingItems ?? []);
+
+    const hasCachedData = Boolean(
+        initialCache &&
+        (initialCache.summary ||
+            initialCache.goals.length > 0 ||
+            initialCache.checkins.length > 0 ||
+            initialCache.readingItems.length > 0 ||
+            initialCache.streak)
+    );
+
+    const [loading, setLoading] = useState<boolean>(() => !hasCachedData);
+    const [error, setError] = useState<string | null>(null);
 
     // Study session modal state
     const [modalOpen, setModalOpen] = useState(false);
@@ -49,9 +111,31 @@ export default function StudySessionsPage() {
     const [goalSubmitting, setGoalSubmitting] = useState(false);
 
     const loadData = useCallback(async () => {
-        if (!user) return;
-        setLoading(true);
+        if (!userId) return;
+        const activeKey = getCacheKey(userId);
+        const cached = readCache(activeKey);
+
+        if (cached) {
+            setStreak((prev) => prev ?? cached.streak ?? null);
+            setSummary((prev) => prev ?? cached.summary ?? null);
+            setGoals((prev) => (prev.length > 0 ? prev : cached.goals ?? []));
+            setCheckins((prev) => (prev.length > 0 ? prev : cached.checkins ?? []));
+            setReadingItems((prev) => (prev.length > 0 ? prev : cached.readingItems ?? []));
+        }
+
+        const hasAnyExistingData = Boolean(
+            cached &&
+            (cached.summary ||
+                cached.goals.length > 0 ||
+                cached.checkins.length > 0 ||
+                cached.readingItems.length > 0 ||
+                cached.streak)
+        );
+        if (!hasAnyExistingData) {
+            setLoading(true);
+        }
         setError(null);
+
         try {
             const [streakRes, sumRes, goalsRes, checkinsRes, readRes] = await Promise.all([
                 coreApi.getStreaks().catch(() => ({ count: 0, next: null, previous: null, results: [] })),
@@ -60,17 +144,33 @@ export default function StudySessionsPage() {
                 coreApi.getCheckins('academics').catch(() => ({ count: 0, next: null, previous: null, results: [] })),
                 academicsApi.getReadingItems().catch(() => ({ count: 0, next: null, previous: null, results: [] })),
             ]);
-            setStreak(streakRes.results[0] ?? null);
+
+            const nextStreak = streakRes.results[0] ?? null;
+            const nextGoals = Array.isArray(goalsRes.results) ? goalsRes.results : [];
+            const nextCheckins = Array.isArray(checkinsRes.results)
+                ? (checkinsRes.results as CheckinWithLoggedAt[])
+                : [];
+            const nextReadingItems = Array.isArray(readRes.results) ? readRes.results : [];
+
+            setStreak(nextStreak);
             setSummary(sumRes);
-            setGoals(goalsRes.results);
-            setCheckins(checkinsRes.results);
-            setReadingItems(readRes.results);
+            setGoals(nextGoals);
+            setCheckins(nextCheckins);
+            setReadingItems(nextReadingItems);
+
+            writeCache(activeKey, {
+                streak: nextStreak,
+                summary: sumRes,
+                goals: nextGoals,
+                checkins: nextCheckins,
+                readingItems: nextReadingItems,
+            });
         } catch (err) {
             setError(err instanceof Error ? err.message : 'Failed to load study sessions.');
         } finally {
             setLoading(false);
         }
-    }, [user]);
+    }, [userId]);
 
     useEffect(() => {
         void loadData();
@@ -289,25 +389,28 @@ export default function StudySessionsPage() {
                                 </div>
                             ) : (
                                 <div className="rounded-xl border border-[#BFC9C3]/70 bg-white divide-y divide-[#ECEEEB]">
-                                    {checkins.slice(0, 6).map((item) => (
-                                        <div
-                                            key={item.id}
-                                            className="flex items-center justify-between px-4 py-3.5"
-                                        >
-                                            <div className="min-w-0 pr-3">
-                                                <div className="truncate text-sm font-semibold text-[#14221C]">
-                                                    {item.title}
+                                    {checkins.slice(0, 6).map((item) => {
+                                        const dateLabel = getCheckinDateLabel(item);
+                                        return (
+                                            <div
+                                                key={item.id}
+                                                className="flex items-center justify-between px-4 py-3.5"
+                                            >
+                                                <div className="min-w-0 pr-3">
+                                                    <div className="truncate text-sm font-semibold text-[#14221C]">
+                                                        {item.title}
+                                                    </div>
+                                                    <div className="font-mono text-[11px] text-[#707974] mt-0.5">
+                                                        {dateLabel}
+                                                        {item.note ? `${dateLabel ? ' · ' : ''}${item.note}` : ''}
+                                                    </div>
                                                 </div>
-                                                <div className="font-mono text-[11px] text-[#707974] mt-0.5">
-                                                    {item.created_at?.slice(0, 10)}
-                                                    {item.note ? ` · ${item.note}` : ''}
-                                                </div>
+                                                <span className="font-mono text-xs font-semibold text-[#00629F] shrink-0">
+                                                    {item.metric_label || 'Logged'}
+                                                </span>
                                             </div>
-                                            <span className="font-mono text-xs font-semibold text-[#00629F] shrink-0">
-                                                {item.metric_label || 'Logged'}
-                                            </span>
-                                        </div>
-                                    ))}
+                                        );
+                                    })}
                                 </div>
                             )}
                         </div>
