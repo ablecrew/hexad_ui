@@ -112,6 +112,22 @@ function writeDashboardCache(key: string | null, data: DashboardCacheSnapshot): 
     }
 }
 
+function hasSnapshotData(snap: DashboardCacheSnapshot | null): boolean {
+    if (!snap) return false;
+    return Boolean(
+        snap.streak ||
+        snap.snapshots.length > 0 ||
+        snap.habits.length > 0 ||
+        snap.goals.length > 0 ||
+        snap.financialSummary ||
+        snap.academicsSummary ||
+        snap.physicalSummary ||
+        snap.emotionalSummary ||
+        snap.spiritualSummary ||
+        snap.mentalSummary
+    );
+}
+
 function formatLocalDate(d: Date, timeZone?: string): string {
     try {
         const parts = new Intl.DateTimeFormat('en-CA', {
@@ -177,65 +193,24 @@ export default function DashboardPage() {
     const router = useRouter();
     const userId = user?.id;
 
-    useEffect(() => {
-        if (userId) {
-            setLastUserId(userId);
-        }
-    }, [userId]);
-
-    const initialCache = useMemo(
-        () => readDashboardCache(getDashboardCacheKey(userId)),
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-        []
-    );
-
-    const hasCachedData = Boolean(
-        initialCache &&
-        (initialCache.streak ||
-            initialCache.snapshots.length > 0 ||
-            initialCache.habits.length > 0 ||
-            initialCache.goals.length > 0 ||
-            initialCache.financialSummary ||
-            initialCache.academicsSummary ||
-            initialCache.physicalSummary)
-    );
-
     const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
-    const [todayStr, setTodayStr] = useState<string>(() =>
-        formatLocalDate(new Date(), 'Africa/Nairobi')
-    );
-    const [greeting, setGreeting] = useState<string>(() =>
-        getTimeOfDayGreeting(new Date(), 'Africa/Nairobi')
-    );
-    const [loadingData, setLoadingData] = useState<boolean>(() => !hasCachedData);
+    const [todayStr, setTodayStr] = useState<string>('');
+    const [greeting, setGreeting] = useState<string>('Welcome');
+    const [loadingData, setLoadingData] = useState<boolean>(true);
     const [error, setError] = useState<string | null>(null);
 
-    const [streak, setStreak] = useState<UserStreak | null>(() => initialCache?.streak ?? null);
-    const [snapshots, setSnapshots] = useState<WeeklySnapshot[]>(
-        () => initialCache?.snapshots ?? []
-    );
-    const [habits, setHabits] = useState<DailyHabit[]>(() => initialCache?.habits ?? []);
-    const [habitLogs, setHabitLogs] = useState<HabitLog[]>(() => initialCache?.habitLogs ?? []);
-    const [goals, setGoals] = useState<PillarGoal[]>(() => initialCache?.goals ?? []);
+    const [streak, setStreak] = useState<UserStreak | null>(null);
+    const [snapshots, setSnapshots] = useState<WeeklySnapshot[]>([]);
+    const [habits, setHabits] = useState<DailyHabit[]>([]);
+    const [habitLogs, setHabitLogs] = useState<HabitLog[]>([]);
+    const [goals, setGoals] = useState<PillarGoal[]>([]);
 
-    const [financialSummary, setFinancialSummary] = useState<FinancialSummary | null>(
-        () => initialCache?.financialSummary ?? null
-    );
-    const [academicsSummary, setAcademicsSummary] = useState<AcademicsSummary | null>(
-        () => initialCache?.academicsSummary ?? null
-    );
-    const [emotionalSummary, setEmotionalSummary] = useState<EmotionalSummary | null>(
-        () => initialCache?.emotionalSummary ?? null
-    );
-    const [spiritualSummary, setSpiritualSummary] = useState<SpiritualSummary | null>(
-        () => initialCache?.spiritualSummary ?? null
-    );
-    const [mentalSummary, setMentalSummary] = useState<MentalSummary | null>(
-        () => initialCache?.mentalSummary ?? null
-    );
-    const [physicalSummary, setPhysicalSummary] = useState<PhysicalSummary | null>(
-        () => initialCache?.physicalSummary ?? null
-    );
+    const [financialSummary, setFinancialSummary] = useState<FinancialSummary | null>(null);
+    const [academicsSummary, setAcademicsSummary] = useState<AcademicsSummary | null>(null);
+    const [emotionalSummary, setEmotionalSummary] = useState<EmotionalSummary | null>(null);
+    const [spiritualSummary, setSpiritualSummary] = useState<SpiritualSummary | null>(null);
+    const [mentalSummary, setMentalSummary] = useState<MentalSummary | null>(null);
+    const [physicalSummary, setPhysicalSummary] = useState<PhysicalSummary | null>(null);
 
     const [focusSeconds, setFocusSeconds] = useState(25 * 60);
     const [focusRunning, setFocusRunning] = useState(false);
@@ -252,23 +227,47 @@ export default function DashboardPage() {
     const [habitScheduledTime, setHabitScheduledTime] = useState('');
     const [habitSubmitting, setHabitSubmitting] = useState(false);
 
-    const [baselineScores, setBaselineScores] = useState<PillarScore[]>(() => {
-        if (typeof window !== 'undefined') {
-            try {
-                const saved = window.localStorage.getItem(BASELINE_STORAGE_KEY);
-                if (saved) {
-                    const parsed = JSON.parse(saved) as PillarScore[];
-                    if (Array.isArray(parsed) && parsed.length > 0) {
-                        return parsed;
-                    }
-                }
-            } catch {
-                // ignore storage errors
-            }
-        }
-        return PILLARS.map((p) => ({ slug: p.slug, current: 5, target: 8 }));
-    });
+    const [baselineScores, setBaselineScores] = useState<PillarScore[]>(() =>
+        PILLARS.map((p) => ({ slug: p.slug, current: 5, target: 8 }))
+    );
     const [quizOpen, setQuizOpen] = useState(false);
+
+    useEffect(() => {
+        if (userId) {
+            setLastUserId(userId);
+        }
+    }, [userId]);
+
+    // Hydrate from localStorage after client mount so SSR and initial client HTML match
+    useEffect(() => {
+        try {
+            const savedBaseline = window.localStorage.getItem(BASELINE_STORAGE_KEY);
+            if (savedBaseline) {
+                const parsed = JSON.parse(savedBaseline) as PillarScore[];
+                if (Array.isArray(parsed) && parsed.length > 0) {
+                    setBaselineScores(parsed);
+                }
+            }
+        } catch {
+            // ignore storage errors
+        }
+
+        const cached = readDashboardCache(getDashboardCacheKey(userId));
+        if (cached && hasSnapshotData(cached)) {
+            setStreak((prev) => prev ?? cached.streak ?? null);
+            setSnapshots((prev) => (prev.length > 0 ? prev : cached.snapshots ?? []));
+            setHabits((prev) => (prev.length > 0 ? prev : cached.habits ?? []));
+            setHabitLogs((prev) => (prev.length > 0 ? prev : cached.habitLogs ?? []));
+            setGoals((prev) => (prev.length > 0 ? prev : cached.goals ?? []));
+            setFinancialSummary((prev) => prev ?? cached.financialSummary ?? null);
+            setAcademicsSummary((prev) => prev ?? cached.academicsSummary ?? null);
+            setEmotionalSummary((prev) => prev ?? cached.emotionalSummary ?? null);
+            setSpiritualSummary((prev) => prev ?? cached.spiritualSummary ?? null);
+            setMentalSummary((prev) => prev ?? cached.mentalSummary ?? null);
+            setPhysicalSummary((prev) => prev ?? cached.physicalSummary ?? null);
+            setLoadingData(false);
+        }
+    }, [userId]);
 
     useEffect(() => {
         const tz = user?.timezone || 'Africa/Nairobi';
@@ -284,10 +283,10 @@ export default function DashboardPage() {
     }, [user?.timezone]);
 
     useEffect(() => {
-        if (!authLoading && !user && !hasCachedData) {
+        if (!authLoading && !user && !hasSnapshotData(readDashboardCache(getDashboardCacheKey(null)))) {
             router.replace('/login');
         }
-    }, [authLoading, user, hasCachedData, router]);
+    }, [authLoading, user, router]);
 
     useEffect(() => {
         if (!focusRunning) return;
@@ -301,8 +300,9 @@ export default function DashboardPage() {
         if (!userId || !todayStr) return;
         const activeKey = getDashboardCacheKey(userId);
         const cached = readDashboardCache(activeKey);
+        const hadCache = hasSnapshotData(cached);
 
-        if (cached) {
+        if (hadCache && cached) {
             setStreak((prev) => prev ?? cached.streak ?? null);
             setSnapshots((prev) => (prev.length > 0 ? prev : cached.snapshots ?? []));
             setHabits((prev) => (prev.length > 0 ? prev : cached.habits ?? []));
@@ -315,7 +315,7 @@ export default function DashboardPage() {
             setMentalSummary((prev) => prev ?? cached.mentalSummary ?? null);
             setPhysicalSummary((prev) => prev ?? cached.physicalSummary ?? null);
             setLoadingData(false);
-        } else if (!hasCachedData) {
+        } else {
             setLoadingData(true);
         }
 
@@ -383,7 +383,7 @@ export default function DashboardPage() {
         } finally {
             setLoadingData(false);
         }
-    }, [userId, todayStr, hasCachedData]);
+    }, [userId, todayStr]);
 
     useEffect(() => {
         void loadDashboard();
@@ -561,7 +561,7 @@ export default function DashboardPage() {
         return 'No active goal set';
     };
 
-    if (authLoading && !hasCachedData) {
+    if (authLoading && !user) {
         return (
             <div className="min-h-screen flex items-center justify-center bg-[#F8FAF7]">
                 <Loader2 className="h-6 w-6 animate-spin text-[#004635]" />
