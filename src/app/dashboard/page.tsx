@@ -44,6 +44,73 @@ import { HexadRadarChart, PillarScore } from '@/components/HexadRadarChart';
 import { BaselineQuizModal } from '@/components/BaselineQuizModal';
 
 const BASELINE_STORAGE_KEY = 'hexad_baseline_scores_v1';
+const LAST_USER_KEY = 'hexad:last_user_id';
+const CACHE_TTL_MS = 10 * 60 * 1000;
+
+type DashboardCacheSnapshot = {
+    streak: UserStreak | null;
+    snapshots: WeeklySnapshot[];
+    habits: DailyHabit[];
+    habitLogs: HabitLog[];
+    goals: PillarGoal[];
+    financialSummary: FinancialSummary | null;
+    academicsSummary: AcademicsSummary | null;
+    emotionalSummary: EmotionalSummary | null;
+    spiritualSummary: SpiritualSummary | null;
+    mentalSummary: MentalSummary | null;
+    physicalSummary: PhysicalSummary | null;
+};
+
+function getLastUserId(): string | null {
+    if (typeof window === 'undefined') return null;
+    try {
+        return window.localStorage.getItem(LAST_USER_KEY);
+    } catch {
+        return null;
+    }
+}
+
+function setLastUserId(userId?: string | number | null): void {
+    if (!userId || typeof window === 'undefined') return;
+    try {
+        window.localStorage.setItem(LAST_USER_KEY, String(userId));
+    } catch {
+        // ignore storage errors
+    }
+}
+
+function getDashboardCacheKey(userId?: string | number | null): string | null {
+    const resolvedId = userId ? String(userId) : getLastUserId();
+    if (!resolvedId) return null;
+    return `hexad:dashboard:overview:${resolvedId}`;
+}
+
+function readDashboardCache(key: string | null): DashboardCacheSnapshot | null {
+    if (!key || typeof window === 'undefined') return null;
+    try {
+        const raw = window.localStorage.getItem(key);
+        if (!raw) return null;
+        const parsed = JSON.parse(raw) as {
+            data?: DashboardCacheSnapshot;
+            savedAt?: number;
+        };
+        if (typeof parsed.savedAt !== 'number' || Date.now() - parsed.savedAt > CACHE_TTL_MS) {
+            return null;
+        }
+        return parsed.data ?? null;
+    } catch {
+        return null;
+    }
+}
+
+function writeDashboardCache(key: string | null, data: DashboardCacheSnapshot): void {
+    if (!key || typeof window === 'undefined') return;
+    try {
+        window.localStorage.setItem(key, JSON.stringify({ data, savedAt: Date.now() }));
+    } catch {
+        // ignore storage errors
+    }
+}
 
 function formatLocalDate(d: Date, timeZone?: string): string {
     try {
@@ -108,25 +175,67 @@ const PILLAR_ROUTES: Partial<Record<PillarSlug, string>> = {
 export default function DashboardPage() {
     const { user, loading: authLoading, logout } = useAuth();
     const router = useRouter();
+    const userId = user?.id;
+
+    useEffect(() => {
+        if (userId) {
+            setLastUserId(userId);
+        }
+    }, [userId]);
+
+    const initialCache = useMemo(
+        () => readDashboardCache(getDashboardCacheKey(userId)),
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+        []
+    );
+
+    const hasCachedData = Boolean(
+        initialCache &&
+        (initialCache.streak ||
+            initialCache.snapshots.length > 0 ||
+            initialCache.habits.length > 0 ||
+            initialCache.goals.length > 0 ||
+            initialCache.financialSummary ||
+            initialCache.academicsSummary ||
+            initialCache.physicalSummary)
+    );
 
     const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
-    const [todayStr, setTodayStr] = useState<string>('');
-    const [greeting, setGreeting] = useState<string>('Welcome');
-    const [loadingData, setLoadingData] = useState(true);
+    const [todayStr, setTodayStr] = useState<string>(() =>
+        formatLocalDate(new Date(), 'Africa/Nairobi')
+    );
+    const [greeting, setGreeting] = useState<string>(() =>
+        getTimeOfDayGreeting(new Date(), 'Africa/Nairobi')
+    );
+    const [loadingData, setLoadingData] = useState<boolean>(() => !hasCachedData);
     const [error, setError] = useState<string | null>(null);
 
-    const [streak, setStreak] = useState<UserStreak | null>(null);
-    const [snapshots, setSnapshots] = useState<WeeklySnapshot[]>([]);
-    const [habits, setHabits] = useState<DailyHabit[]>([]);
-    const [habitLogs, setHabitLogs] = useState<HabitLog[]>([]);
-    const [goals, setGoals] = useState<PillarGoal[]>([]);
+    const [streak, setStreak] = useState<UserStreak | null>(() => initialCache?.streak ?? null);
+    const [snapshots, setSnapshots] = useState<WeeklySnapshot[]>(
+        () => initialCache?.snapshots ?? []
+    );
+    const [habits, setHabits] = useState<DailyHabit[]>(() => initialCache?.habits ?? []);
+    const [habitLogs, setHabitLogs] = useState<HabitLog[]>(() => initialCache?.habitLogs ?? []);
+    const [goals, setGoals] = useState<PillarGoal[]>(() => initialCache?.goals ?? []);
 
-    const [financialSummary, setFinancialSummary] = useState<FinancialSummary | null>(null);
-    const [academicsSummary, setAcademicsSummary] = useState<AcademicsSummary | null>(null);
-    const [emotionalSummary, setEmotionalSummary] = useState<EmotionalSummary | null>(null);
-    const [spiritualSummary, setSpiritualSummary] = useState<SpiritualSummary | null>(null);
-    const [mentalSummary, setMentalSummary] = useState<MentalSummary | null>(null);
-    const [physicalSummary, setPhysicalSummary] = useState<PhysicalSummary | null>(null);
+    const [financialSummary, setFinancialSummary] = useState<FinancialSummary | null>(
+        () => initialCache?.financialSummary ?? null
+    );
+    const [academicsSummary, setAcademicsSummary] = useState<AcademicsSummary | null>(
+        () => initialCache?.academicsSummary ?? null
+    );
+    const [emotionalSummary, setEmotionalSummary] = useState<EmotionalSummary | null>(
+        () => initialCache?.emotionalSummary ?? null
+    );
+    const [spiritualSummary, setSpiritualSummary] = useState<SpiritualSummary | null>(
+        () => initialCache?.spiritualSummary ?? null
+    );
+    const [mentalSummary, setMentalSummary] = useState<MentalSummary | null>(
+        () => initialCache?.mentalSummary ?? null
+    );
+    const [physicalSummary, setPhysicalSummary] = useState<PhysicalSummary | null>(
+        () => initialCache?.physicalSummary ?? null
+    );
 
     const [focusSeconds, setFocusSeconds] = useState(25 * 60);
     const [focusRunning, setFocusRunning] = useState(false);
@@ -143,9 +252,22 @@ export default function DashboardPage() {
     const [habitScheduledTime, setHabitScheduledTime] = useState('');
     const [habitSubmitting, setHabitSubmitting] = useState(false);
 
-    const [baselineScores, setBaselineScores] = useState<PillarScore[]>(() =>
-        PILLARS.map((p) => ({ slug: p.slug, current: 5, target: 8 }))
-    );
+    const [baselineScores, setBaselineScores] = useState<PillarScore[]>(() => {
+        if (typeof window !== 'undefined') {
+            try {
+                const saved = window.localStorage.getItem(BASELINE_STORAGE_KEY);
+                if (saved) {
+                    const parsed = JSON.parse(saved) as PillarScore[];
+                    if (Array.isArray(parsed) && parsed.length > 0) {
+                        return parsed;
+                    }
+                }
+            } catch {
+                // ignore storage errors
+            }
+        }
+        return PILLARS.map((p) => ({ slug: p.slug, current: 5, target: 8 }));
+    });
     const [quizOpen, setQuizOpen] = useState(false);
 
     useEffect(() => {
@@ -162,10 +284,10 @@ export default function DashboardPage() {
     }, [user?.timezone]);
 
     useEffect(() => {
-        if (!authLoading && !user) {
+        if (!authLoading && !user && !hasCachedData) {
             router.replace('/login');
         }
-    }, [authLoading, user, router]);
+    }, [authLoading, user, hasCachedData, router]);
 
     useEffect(() => {
         if (!focusRunning) return;
@@ -175,23 +297,28 @@ export default function DashboardPage() {
         return () => clearInterval(timer);
     }, [focusRunning]);
 
-    useEffect(() => {
-        try {
-            const saved = localStorage.getItem(BASELINE_STORAGE_KEY);
-            if (saved) {
-                const parsed = JSON.parse(saved) as PillarScore[];
-                if (Array.isArray(parsed) && parsed.length > 0) {
-                    setBaselineScores(parsed);
-                }
-            }
-        } catch {
-            // ignore storage errors
-        }
-    }, []);
-
     const loadDashboard = useCallback(async () => {
-        if (!user || !todayStr) return;
-        setLoadingData(true);
+        if (!userId || !todayStr) return;
+        const activeKey = getDashboardCacheKey(userId);
+        const cached = readDashboardCache(activeKey);
+
+        if (cached) {
+            setStreak((prev) => prev ?? cached.streak ?? null);
+            setSnapshots((prev) => (prev.length > 0 ? prev : cached.snapshots ?? []));
+            setHabits((prev) => (prev.length > 0 ? prev : cached.habits ?? []));
+            setHabitLogs((prev) => (prev.length > 0 ? prev : cached.habitLogs ?? []));
+            setGoals((prev) => (prev.length > 0 ? prev : cached.goals ?? []));
+            setFinancialSummary((prev) => prev ?? cached.financialSummary ?? null);
+            setAcademicsSummary((prev) => prev ?? cached.academicsSummary ?? null);
+            setEmotionalSummary((prev) => prev ?? cached.emotionalSummary ?? null);
+            setSpiritualSummary((prev) => prev ?? cached.spiritualSummary ?? null);
+            setMentalSummary((prev) => prev ?? cached.mentalSummary ?? null);
+            setPhysicalSummary((prev) => prev ?? cached.physicalSummary ?? null);
+            setLoadingData(false);
+        } else if (!hasCachedData) {
+            setLoadingData(true);
+        }
+
         setError(null);
         try {
             const [
@@ -220,23 +347,43 @@ export default function DashboardPage() {
                 pillarSummariesApi.physical().catch(() => null),
             ]);
 
-            setStreak(streakRes.results[0] ?? null);
-            setSnapshots(snapRes.results);
-            setHabits(habitsRes.results);
-            setHabitLogs(logsRes.results);
-            setGoals(goalsRes.results);
+            const nextStreak = streakRes.results[0] ?? null;
+            const nextSnapshots = Array.isArray(snapRes.results) ? snapRes.results : [];
+            const nextHabits = Array.isArray(habitsRes.results) ? habitsRes.results : [];
+            const nextHabitLogs = Array.isArray(logsRes.results) ? logsRes.results : [];
+            const nextGoals = Array.isArray(goalsRes.results) ? goalsRes.results : [];
+
+            setStreak(nextStreak);
+            setSnapshots(nextSnapshots);
+            setHabits(nextHabits);
+            setHabitLogs(nextHabitLogs);
+            setGoals(nextGoals);
             setFinancialSummary(finRes);
             setAcademicsSummary(acadRes);
             setEmotionalSummary(emoRes);
             setSpiritualSummary(spirRes);
             setMentalSummary(mentRes);
             setPhysicalSummary(physRes);
+
+            writeDashboardCache(activeKey, {
+                streak: nextStreak,
+                snapshots: nextSnapshots,
+                habits: nextHabits,
+                habitLogs: nextHabitLogs,
+                goals: nextGoals,
+                financialSummary: finRes,
+                academicsSummary: acadRes,
+                emotionalSummary: emoRes,
+                spiritualSummary: spirRes,
+                mentalSummary: mentRes,
+                physicalSummary: physRes,
+            });
         } catch (err) {
             setError(err instanceof Error ? err.message : 'Failed to load dashboard data.');
         } finally {
             setLoadingData(false);
         }
-    }, [user, todayStr]);
+    }, [userId, todayStr, hasCachedData]);
 
     useEffect(() => {
         void loadDashboard();
@@ -414,7 +561,7 @@ export default function DashboardPage() {
         return 'No active goal set';
     };
 
-    if (authLoading || (!user && !authLoading)) {
+    if (authLoading && !hasCachedData) {
         return (
             <div className="min-h-screen flex items-center justify-center bg-[#F8FAF7]">
                 <Loader2 className="h-6 w-6 animate-spin text-[#004635]" />
@@ -498,13 +645,13 @@ export default function DashboardPage() {
                                     onClick={() => setMobileMenuOpen(false)}
                                     className="flex w-full items-center justify-between rounded-lg px-3 py-2.5 lg:py-2 text-xs font-medium text-[#3A4740] hover:bg-[#ECEEEB] transition"
                                 >
-                  <span className="flex items-center gap-2.5">
-                    <Icon className="h-4 w-4 text-[#707974]" />
-                      {label}
-                  </span>
+                                    <span className="flex items-center gap-2.5">
+                                        <Icon className="h-4 w-4 text-[#707974]" />
+                                        {label}
+                                    </span>
                                     <span className="font-mono text-[11px] text-[#707974]">
-                    {latestPillarScores[slug] ?? 0}%
-                  </span>
+                                        {latestPillarScores[slug] ?? 0}%
+                                    </span>
                                 </Link>
                             );
                         }
@@ -516,13 +663,13 @@ export default function DashboardPage() {
                                 onClick={() => handlePillarNavigateOrCheckin(slug)}
                                 className="flex w-full items-center justify-between rounded-lg px-3 py-2.5 lg:py-2 text-xs font-medium text-[#3A4740] hover:bg-[#ECEEEB] transition"
                             >
-                <span className="flex items-center gap-2.5">
-                  <Icon className="h-4 w-4 text-[#707974]" />
-                    {label}
-                </span>
+                                <span className="flex items-center gap-2.5">
+                                    <Icon className="h-4 w-4 text-[#707974]" />
+                                    {label}
+                                </span>
                                 <span className="font-mono text-[11px] text-[#707974]">
-                  {latestPillarScores[slug] ?? 0}%
-                </span>
+                                    {latestPillarScores[slug] ?? 0}%
+                                </span>
                             </button>
                         );
                     })}
@@ -540,7 +687,7 @@ export default function DashboardPage() {
                         </div>
                         <div className="min-w-0">
                             <div className="truncate text-xs font-semibold text-[#14221C]">
-                                {user?.full_name}
+                                {user?.full_name || 'Member'}
                             </div>
                             <div className="text-[11px] text-[#707974]">
                                 {streak?.current_streak_days ?? 0}-day streak
@@ -648,8 +795,8 @@ export default function DashboardPage() {
                         >
                             <Timer className="h-3.5 w-3.5 text-[#004635]" />
                             <span className="font-mono">
-                {focusMins}:{focusSecs}
-              </span>
+                                {focusMins}:{focusSecs}
+                            </span>
                             <span>{focusRunning ? 'Pause' : 'Focus'}</span>
                         </button>
                         <button
@@ -706,10 +853,10 @@ export default function DashboardPage() {
                                 <div className="flex items-center justify-between text-xs text-[#707974]">
                                     <span>Today&apos;s habits</span>
                                     <span className="rounded-full bg-[#E6F2EC] px-2.5 py-0.5 text-[11px] font-medium text-[#004635]">
-                    {habits.length > 0 && completedHabitIds.size === habits.length
-                        ? 'Completed'
-                        : 'Active'}
-                  </span>
+                                        {habits.length > 0 && completedHabitIds.size === habits.length
+                                            ? 'Completed'
+                                            : 'Active'}
+                                    </span>
                                 </div>
                                 <div className="mt-2 font-serif text-2xl sm:text-3xl font-semibold text-[#111D18]">
                                     {completedHabitIds.size} / {habits.length}
@@ -758,8 +905,8 @@ export default function DashboardPage() {
                                                 </div>
                                             </div>
                                             <span className={`font-mono text-xs font-semibold shrink-0 ${pillar.badgeText}`}>
-                        {score}% →
-                      </span>
+                                                {score}% →
+                                            </span>
                                         </div>
 
                                         <div className="mt-3.5 flex flex-wrap gap-1.5">
@@ -768,19 +915,19 @@ export default function DashboardPage() {
                                                     key={sub}
                                                     className="rounded-md bg-[#ECEEEB] px-2 py-0.5 text-[11px] text-[#2E312F]"
                                                 >
-                          {sub}
-                        </span>
+                                                    {sub}
+                                                </span>
                                             ))}
                                             <span className="rounded-md bg-[#ECEEEB] px-2 py-0.5 text-[11px] text-[#707974]">
-                        +{Math.max(0, pillar.subtabs.length - 3)} more
-                      </span>
+                                                +{Math.max(0, pillar.subtabs.length - 3)} more
+                                            </span>
                                         </div>
 
                                         <div className="mt-4 flex items-center justify-between border-t border-[#ECEEEB] pt-3 text-[11px] text-[#707974]">
                                             <span className="truncate">{getPillarFooterLine(pillar.slug)}</span>
                                             <span className="font-mono font-medium text-[#004635] shrink-0 ml-2">
-                        {score}% score
-                      </span>
+                                                {score}% score
+                                            </span>
                                         </div>
                                     </button>
                                 );
@@ -873,12 +1020,12 @@ export default function DashboardPage() {
                                             return (
                                                 <div key={pillar.slug}>
                                                     <div className="flex items-center justify-between text-xs mb-1">
-                            <span className="font-medium text-[#14221C]">
-                              {pillar.label}
-                            </span>
+                                                        <span className="font-medium text-[#14221C]">
+                                                            {pillar.label}
+                                                        </span>
                                                         <span className="font-mono font-semibold text-[#2E312F]">
-                              {score}%
-                            </span>
+                                                            {score}%
+                                                        </span>
                                                     </div>
                                                     <div className="h-2 w-full overflow-hidden rounded-full bg-[#ECEEEB]">
                                                         <div
@@ -895,9 +1042,9 @@ export default function DashboardPage() {
                                 <div className="mt-5 flex items-start gap-2 rounded-lg bg-[#ECEEEB]/60 p-3 text-xs text-[#2E312F]">
                                     <Sparkles className="h-4 w-4 shrink-0 text-[#004635] mt-0.5" />
                                     <span>
-                    Weekly scores update automatically when you log check-ins, habits,
-                    and pillar activity.
-                  </span>
+                                        Weekly scores update automatically when you log check-ins, habits,
+                                        and pillar activity.
+                                    </span>
                                 </div>
                             </div>
                         </div>
