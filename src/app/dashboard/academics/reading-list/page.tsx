@@ -11,10 +11,30 @@ type ReadingListCache = {
 };
 
 const CACHE_TTL_MS = 10 * 60 * 1000;
+const LAST_USER_KEY = 'hexad:last_user_id';
+
+function getLastUserId(): string | null {
+    if (typeof window === 'undefined') return null;
+    try {
+        return window.localStorage.getItem(LAST_USER_KEY);
+    } catch {
+        return null;
+    }
+}
+
+function setLastUserId(userId?: string | number | null): void {
+    if (!userId || typeof window === 'undefined') return;
+    try {
+        window.localStorage.setItem(LAST_USER_KEY, String(userId));
+    } catch {
+        // Ignore storage errors
+    }
+}
 
 function getCacheKey(userId?: string | number | null): string | null {
-    if (!userId) return null;
-    return `hexad:academics:reading-list:${userId}`;
+    const resolvedId = userId ? String(userId) : getLastUserId();
+    if (!resolvedId) return null;
+    return `hexad:academics:reading-list:${resolvedId}`;
 }
 
 function readCache(key: string | null): ReadingListCache | null {
@@ -44,16 +64,27 @@ function writeCache(key: string | null, data: ReadingListCache): void {
 export default function ReadingListPage() {
     const { user } = useAuth();
     const userId = user?.id;
-    const cacheKey = getCacheKey(userId);
-    const initialCache = readCache(cacheKey);
+
+    useEffect(() => {
+        if (userId) {
+            setLastUserId(userId);
+        }
+    }, [userId]);
+
+    const initialCache = useMemo(
+        () => readCache(getCacheKey(userId)),
+        // Only compute initial mount cache once
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+        []
+    );
 
     const [readingItems, setReadingItems] = useState<ReadingItem[]>(
         () => initialCache?.readingItems ?? []
     );
 
-    const hasCachedData = Boolean(initialCache && initialCache.readingItems.length > 0);
-
-    const [loading, setLoading] = useState<boolean>(() => !hasCachedData);
+    const [loading, setLoading] = useState<boolean>(
+        () => !(initialCache && initialCache.readingItems.length > 0)
+    );
     const [error, setError] = useState<string | null>(null);
 
     const [modalOpen, setModalOpen] = useState(false);
@@ -70,10 +101,8 @@ export default function ReadingListPage() {
 
         if (cached && cached.readingItems.length > 0) {
             setReadingItems((prev) => (prev.length > 0 ? prev : cached.readingItems));
-        }
-
-        const hasAnyExistingData = Boolean(cached && cached.readingItems.length > 0);
-        if (!hasAnyExistingData) {
+            setLoading(false);
+        } else if (readingItems.length === 0) {
             setLoading(true);
         }
         setError(null);
@@ -90,7 +119,7 @@ export default function ReadingListPage() {
         } finally {
             setLoading(false);
         }
-    }, [userId]);
+    }, [userId, readingItems.length]);
 
     useEffect(() => {
         void loadData();
