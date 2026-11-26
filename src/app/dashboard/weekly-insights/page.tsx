@@ -28,11 +28,106 @@ import {
 
 type WindowRange = '7d' | '30d' | '90d';
 
+const LAST_USER_KEY = 'hexad:last_user_id';
+const CACHE_TTL_MS = 10 * 60 * 1000;
+
+type InsightsCacheSnapshot = {
+    streak: UserStreak | null;
+    snapshots: WeeklySnapshot[];
+    habits: DailyHabit[];
+    habitLogs: HabitLog[];
+    checkins: PillarCheckin[];
+};
+
+function getLastUserId(): string | null {
+    if (typeof window === 'undefined') return null;
+    try {
+        return window.localStorage.getItem(LAST_USER_KEY);
+    } catch {
+        return null;
+    }
+}
+
+function setLastUserId(userId?: string | number | null): void {
+    if (!userId || typeof window === 'undefined') return;
+    try {
+        window.localStorage.setItem(LAST_USER_KEY, String(userId));
+    } catch {
+        // ignore storage errors
+    }
+}
+
+function getInsightsCacheKey(userId?: string | number | null): string | null {
+    const resolvedId = userId ? String(userId) : getLastUserId();
+    if (!resolvedId) return null;
+    return `hexad:dashboard:weekly-insights:${resolvedId}`;
+}
+
+function readInsightsCache(key: string | null): InsightsCacheSnapshot | null {
+    if (!key || typeof window === 'undefined') return null;
+    try {
+        const raw = window.localStorage.getItem(key);
+        if (!raw) return null;
+        const parsed = JSON.parse(raw) as {
+            data?: InsightsCacheSnapshot;
+            savedAt?: number;
+        };
+        if (typeof parsed.savedAt !== 'number' || Date.now() - parsed.savedAt > CACHE_TTL_MS) {
+            return null;
+        }
+        return parsed.data ?? null;
+    } catch {
+        return null;
+    }
+}
+
+function writeInsightsCache(key: string | null, data: InsightsCacheSnapshot): void {
+    if (!key || typeof window === 'undefined') return;
+    try {
+        window.localStorage.setItem(key, JSON.stringify({ data, savedAt: Date.now() }));
+    } catch {
+        // ignore storage errors
+    }
+}
+
+function hasInsightsData(snap: InsightsCacheSnapshot | null): boolean {
+    if (!snap) return false;
+    return Boolean(
+        snap.streak ||
+        snap.snapshots.length > 0 ||
+        snap.habits.length > 0 ||
+        snap.habitLogs.length > 0 ||
+        snap.checkins.length > 0
+    );
+}
+
+function formatLocalDate(d: Date, timeZone?: string): string {
+    try {
+        const parts = new Intl.DateTimeFormat('en-CA', {
+            timeZone: timeZone || 'Africa/Nairobi',
+            year: 'numeric',
+            month: '2-digit',
+            day: '2-digit',
+        }).formatToParts(d);
+        const year = parts.find((p) => p.type === 'year')?.value ?? '0000';
+        const month = parts.find((p) => p.type === 'month')?.value ?? '01';
+        const day = parts.find((p) => p.type === 'day')?.value ?? '01';
+        return `${year}-${month}-${day}`;
+    } catch {
+        const year = d.getFullYear();
+        const month = String(d.getMonth() + 1).padStart(2, '0');
+        const day = String(d.getDate()).padStart(2, '0');
+        return `${year}-${month}-${day}`;
+    }
+}
+
 export default function WeeklyInsightsPage() {
     const { user, loading: authLoading } = useAuth();
     const router = useRouter();
+    const userId = user?.id;
 
     const [range, setRange] = useState<WindowRange>('7d');
+    const [todayStr, setTodayStr] = useState<string>('');
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
 
@@ -54,14 +149,51 @@ export default function WeeklyInsightsPage() {
     const [submittingGoal, setSubmittingGoal] = useState(false);
 
     useEffect(() => {
-        if (!authLoading && !user) {
+        if (userId) {
+            setLastUserId(userId);
+        }
+    }, [userId]);
+
+    useEffect(() => {
+        setTodayStr(formatLocalDate(new Date(), user?.timezone || 'Africa/Nairobi'));
+    }, [user?.timezone]);
+
+    // Hydrate from localStorage after mount so SSR and initial client HTML stay aligned
+    useEffect(() => {
+        const cached = readInsightsCache(getInsightsCacheKey(userId));
+        if (cached && hasInsightsData(cached)) {
+            setStreak((prev) => prev ?? cached.streak ?? null);
+            setSnapshots((prev) => (prev.length > 0 ? prev : cached.snapshots ?? []));
+            setHabits((prev) => (prev.length > 0 ? prev : cached.habits ?? []));
+            setHabitLogs((prev) => (prev.length > 0 ? prev : cached.habitLogs ?? []));
+            setCheckins((prev) => (prev.length > 0 ? prev : cached.checkins ?? []));
+            setLoading(false);
+        }
+    }, [userId]);
+
+    useEffect(() => {
+        if (!authLoading && !user && !hasInsightsData(readInsightsCache(getInsightsCacheKey(null)))) {
             router.replace('/login');
         }
     }, [authLoading, user, router]);
 
     const loadInsights = useCallback(async () => {
-        if (!user) return;
-        setLoading(true);
+        if (!userId || !todayStr) return;
+        const activeKey = getInsightsCacheKey(userId);
+        const cached = readInsightsCache(activeKey);
+        const hadCache = hasInsightsData(cached);
+
+        if (hadCache && cached) {
+            setStreak((prev) => prev ?? cached.streak ?? null);
+            setSnapshots((prev) => (prev.length > 0 ? prev : cached.snapshots ?? []));
+            setHabits((prev) => (prev.length > 0 ? prev : cached.habits ?? []));
+            setHabitLogs((prev) => (prev.length > 0 ? prev : cached.habitLogs ?? []));
+            setCheckins((prev) => (prev.length > 0 ? prev : cached.checkins ?? []));
+            setLoading(false);
+        } else {
+            setLoading(true);
+        }
+
         setError(null);
         try {
             const [streakRes, snapRes, habitsRes, logsRes, checkinsRes] =
@@ -69,7 +201,7 @@ export default function WeeklyInsightsPage() {
                     coreApi.getStreaks().catch(() => ({ count: 0, next: null, previous: null, results: [] })),
                     coreApi.getSnapshots().catch(() => ({ count: 0, next: null, previous: null, results: [] })),
                     coreApi.getHabits().catch(() => ({ count: 0, next: null, previous: null, results: [] })),
-                    coreApi.getHabitLogsByDate(new Date().toISOString().slice(0, 10)).catch(() => ({
+                    coreApi.getHabitLogsByDate(todayStr).catch(() => ({
                         count: 0,
                         next: null,
                         previous: null,
@@ -77,17 +209,32 @@ export default function WeeklyInsightsPage() {
                     })),
                     coreApi.getCheckins().catch(() => ({ count: 0, next: null, previous: null, results: [] })),
                 ]);
-            setStreak(streakRes.results[0] ?? null);
-            setSnapshots(snapRes.results);
-            setHabits(habitsRes.results);
-            setHabitLogs(logsRes.results);
-            setCheckins(checkinsRes.results);
+
+            const nextStreak = streakRes.results[0] ?? null;
+            const nextSnapshots = Array.isArray(snapRes.results) ? snapRes.results : [];
+            const nextHabits = Array.isArray(habitsRes.results) ? habitsRes.results : [];
+            const nextHabitLogs = Array.isArray(logsRes.results) ? logsRes.results : [];
+            const nextCheckins = Array.isArray(checkinsRes.results) ? checkinsRes.results : [];
+
+            setStreak(nextStreak);
+            setSnapshots(nextSnapshots);
+            setHabits(nextHabits);
+            setHabitLogs(nextHabitLogs);
+            setCheckins(nextCheckins);
+
+            writeInsightsCache(activeKey, {
+                streak: nextStreak,
+                snapshots: nextSnapshots,
+                habits: nextHabits,
+                habitLogs: nextHabitLogs,
+                checkins: nextCheckins,
+            });
         } catch (err) {
             setError(err instanceof Error ? err.message : 'Failed to load weekly insights.');
         } finally {
             setLoading(false);
         }
-    }, [user]);
+    }, [userId, todayStr]);
 
     useEffect(() => {
         void loadInsights();
@@ -144,7 +291,7 @@ export default function WeeklyInsightsPage() {
         }
     };
 
-    if (authLoading || (!user && !authLoading)) {
+    if (authLoading && !user) {
         return (
             <div className="min-h-screen flex items-center justify-center bg-[#F8FAF7]">
                 <Loader2 className="h-6 w-6 animate-spin text-[#004635]" />
@@ -204,13 +351,13 @@ export default function WeeklyInsightsPage() {
                                     href={href}
                                     className="flex w-full items-center justify-between rounded-lg px-3 py-2 text-xs font-medium text-[#3A4740] hover:bg-[#ECEEEB] transition"
                                 >
-                  <span className="flex items-center gap-2.5">
-                    <Icon className="h-4 w-4 text-[#707974]" />
-                      {label}
-                  </span>
+                                    <span className="flex items-center gap-2.5">
+                                        <Icon className="h-4 w-4 text-[#707974]" />
+                                        {label}
+                                    </span>
                                     <span className="font-mono text-[11px] text-[#707974]">
-                    {latestPillarScores[slug] ?? 0}%
-                  </span>
+                                        {latestPillarScores[slug] ?? 0}%
+                                    </span>
                                 </Link>
                             );
                         })}
@@ -226,7 +373,7 @@ export default function WeeklyInsightsPage() {
                             </div>
                             <div className="min-w-0">
                                 <div className="truncate text-xs font-semibold text-[#14221C]">
-                                    {user?.full_name}
+                                    {user?.full_name || 'Member'}
                                 </div>
                                 <div className="font-mono text-[11px] text-[#707974]">
                                     {streak?.current_streak_days ?? 0}-day streak
@@ -309,12 +456,12 @@ export default function WeeklyInsightsPage() {
                             <div className="rounded-xl border border-[#BFC9C3]/70 bg-white p-5">
                                 <div className="text-xs text-[#707974]">Composite Growth Score</div>
                                 <div className="mt-2 flex items-baseline gap-2">
-                  <span className="font-mono text-2xl font-semibold text-[#006D3E]">
-                    {compositeScore}
-                  </span>
+                                    <span className="font-mono text-2xl font-semibold text-[#006D3E]">
+                                        {compositeScore}
+                                    </span>
                                     <span className="font-mono text-xs text-[#006D3E]">
-                    {snapshots.length} snapshots
-                  </span>
+                                        {snapshots.length} snapshots
+                                    </span>
                                 </div>
                                 <div className="mt-1 text-xs text-[#707974]">
                                     Weighted across {rankedPillars.length} life pillars
@@ -324,12 +471,12 @@ export default function WeeklyInsightsPage() {
                             <div className="rounded-xl border border-[#BFC9C3]/70 bg-white p-5">
                                 <div className="text-xs text-[#707974]">Leading Pillar</div>
                                 <div className="mt-2 flex items-baseline gap-2">
-                  <span className="font-serif text-2xl font-semibold text-[#006D3E]">
-                    {leadingPillar?.label ?? '—'}
-                  </span>
+                                    <span className="font-serif text-2xl font-semibold text-[#006D3E]">
+                                        {leadingPillar?.label ?? '—'}
+                                    </span>
                                     <span className="font-mono text-sm font-semibold text-[#006D3E]">
-                    {leadingPillar?.score ?? 0}%
-                  </span>
+                                        {leadingPillar?.score ?? 0}%
+                                    </span>
                                 </div>
                                 <div className="mt-1 text-xs text-[#707974]">
                                     {rankedPillars[1]
@@ -341,12 +488,12 @@ export default function WeeklyInsightsPage() {
                             <div className="rounded-xl border border-[#BFC9C3]/70 bg-white p-5">
                                 <div className="text-xs text-[#707974]">Habits &amp; Check-ins</div>
                                 <div className="mt-2 flex items-baseline gap-2">
-                  <span className="font-mono text-2xl font-semibold text-[#111D18]">
-                    {habitLogs.filter((l) => l.completed).length} / {habits.length}
-                  </span>
+                                    <span className="font-mono text-2xl font-semibold text-[#111D18]">
+                                        {habitLogs.filter((l) => l.completed).length} / {habits.length}
+                                    </span>
                                     <span className="text-xs text-[#707974]">
-                    {checkins.length} check-ins
-                  </span>
+                                        {checkins.length} check-ins
+                                    </span>
                                 </div>
                                 <div className="mt-1 text-xs text-[#707974]">
                                     Current streak: {streak?.current_streak_days ?? 0} days
@@ -364,12 +511,12 @@ export default function WeeklyInsightsPage() {
                                     {rankedPillars.map((pillar) => (
                                         <div key={pillar.slug}>
                                             <div className="flex items-center justify-between text-xs mb-1.5">
-                        <span className="font-medium text-[#14221C]">
-                          {pillar.label}
-                        </span>
+                                                <span className="font-medium text-[#14221C]">
+                                                    {pillar.label}
+                                                </span>
                                                 <span className={`font-mono font-semibold ${pillar.badgeText}`}>
-                          {pillar.score}%
-                        </span>
+                                                    {pillar.score}%
+                                                </span>
                                             </div>
                                             <div className="h-2 w-full overflow-hidden rounded-full bg-[#ECEEEB]">
                                                 <div
