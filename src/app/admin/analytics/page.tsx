@@ -1,4 +1,3 @@
-// src/app/admin/analytics/page.tsx
 'use client';
 
 import React, { useCallback, useEffect, useState } from 'react';
@@ -8,18 +7,99 @@ import { useAuth } from '@/context/AuthContext';
 import { adminApi, AdminAnalyticsStats } from '@/lib/admin-api';
 import { isAdminUser } from '@/lib/rbac';
 
+const LAST_USER_KEY = 'hexad:last_user_id';
+const CACHE_TTL_MS = 10 * 60 * 1000;
+
+function getLastUserId(): string | null {
+    if (typeof window === 'undefined') return null;
+    try {
+        return window.localStorage.getItem(LAST_USER_KEY);
+    } catch {
+        return null;
+    }
+}
+
+function setLastUserId(userId?: string | number | null): void {
+    if (!userId || typeof window === 'undefined') return;
+    try {
+        window.localStorage.setItem(LAST_USER_KEY, String(userId));
+    } catch {
+        // ignore storage errors
+    }
+}
+
+function getAdminAnalyticsCacheKey(userId?: string | number | null): string | null {
+    const resolvedId = userId ? String(userId) : getLastUserId();
+    if (!resolvedId) return null;
+    return `hexad:admin:analytics:${resolvedId}`;
+}
+
+function readAdminAnalyticsCache(key: string | null): AdminAnalyticsStats | null {
+    if (!key || typeof window === 'undefined') return null;
+    try {
+        const raw = window.localStorage.getItem(key);
+        if (!raw) return null;
+        const parsed = JSON.parse(raw) as {
+            data?: AdminAnalyticsStats;
+            savedAt?: number;
+        };
+        if (typeof parsed.savedAt !== 'number' || Date.now() - parsed.savedAt > CACHE_TTL_MS) {
+            return null;
+        }
+        return parsed.data ?? null;
+    } catch {
+        return null;
+    }
+}
+
+function writeAdminAnalyticsCache(key: string | null, data: AdminAnalyticsStats): void {
+    if (!key || typeof window === 'undefined') return;
+    try {
+        window.localStorage.setItem(key, JSON.stringify({ data, savedAt: Date.now() }));
+    } catch {
+        // ignore storage errors
+    }
+}
+
 export default function AdminAnalyticsPage() {
     const { user } = useAuth();
+    const userId = user?.id;
+
     const [loading, setLoading] = useState(true);
     const [statusMessage, setStatusMessage] = useState<string | null>(null);
     const [analytics, setAnalytics] = useState<AdminAnalyticsStats | null>(null);
 
+    useEffect(() => {
+        if (userId) {
+            setLastUserId(userId);
+        }
+    }, [userId]);
+
+    // Hydrate from localStorage after mount so SSR and initial client HTML stay aligned
+    useEffect(() => {
+        const cached = readAdminAnalyticsCache(getAdminAnalyticsCacheKey(userId));
+        if (cached) {
+            setAnalytics((prev) => prev ?? cached);
+            setLoading(false);
+        }
+    }, [userId]);
+
     const loadAnalytics = useCallback(async () => {
         if (!user || !isAdminUser(user)) return;
-        setLoading(true);
+        const activeKey = getAdminAnalyticsCacheKey(user.id);
+        const cached = readAdminAnalyticsCache(activeKey);
+
+        if (cached) {
+            setAnalytics((prev) => prev ?? cached);
+            setLoading(false);
+        } else {
+            setLoading(true);
+        }
+
         try {
             const res = await adminApi.getAnalytics();
             setAnalytics(res);
+            writeAdminAnalyticsCache(activeKey, res);
         } finally {
             setLoading(false);
         }
@@ -153,8 +233,8 @@ export default function AdminAnalyticsPage() {
                                                 </div>
                                             </div>
                                             <span className="font-mono text-xs font-semibold text-[#004635] shrink-0">
-                        #{item.rank}
-                      </span>
+                                                #{item.rank}
+                                            </span>
                                         </div>
                                     ))
                                 )}

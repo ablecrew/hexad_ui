@@ -1,3 +1,6 @@
+'use client';
+
+import React, { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import {
   ArrowRight,
@@ -5,6 +8,11 @@ import {
   Hexagon,
 } from 'lucide-react';
 import { PILLARS } from '@/lib/pillars';
+import { useAuth } from '@/context/AuthContext';
+import { PillarSlug, UserStreak, WeeklySnapshot } from '@/types/api';
+
+const LAST_USER_KEY = 'hexad:last_user_id';
+const CACHE_TTL_MS = 10 * 60 * 1000;
 
 const PREVIEW_SCORES: Record<string, { pct: number; bar: string }> = {
   academics: { pct: 88, bar: 'bg-[#2563EB]' },
@@ -15,7 +23,75 @@ const PREVIEW_SCORES: Record<string, { pct: number; bar: string }> = {
   financial: { pct: 92, bar: 'bg-[#084C36]' },
 };
 
+type CachedDashboardOverview = {
+  streak?: UserStreak | null;
+  snapshots?: WeeklySnapshot[];
+};
+
+function getLastUserId(): string | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    return window.localStorage.getItem(LAST_USER_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function readCachedOverview(userId?: string | number | null): CachedDashboardOverview | null {
+  if (typeof window === 'undefined') return null;
+  const resolvedId = userId ? String(userId) : getLastUserId();
+  if (!resolvedId) return null;
+  try {
+    const raw = window.localStorage.getItem(`hexad:dashboard:overview:${resolvedId}`);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as {
+      data?: CachedDashboardOverview;
+      savedAt?: number;
+    };
+    if (typeof parsed.savedAt !== 'number' || Date.now() - parsed.savedAt > CACHE_TTL_MS) {
+      return null;
+    }
+    return parsed.data ?? null;
+  } catch {
+    return null;
+  }
+}
+
 export default function LandingPage() {
+  const { user } = useAuth();
+  const userId = user?.id;
+
+  const [cachedSnapshots, setCachedSnapshots] = useState<WeeklySnapshot[]>([]);
+  const [cachedStreakDays, setCachedStreakDays] = useState<number | null>(null);
+
+  // Hydrate from localStorage after mount so SSR and initial client HTML stay aligned
+  useEffect(() => {
+    const cached = readCachedOverview(userId);
+    if (!cached) return;
+
+    if (Array.isArray(cached.snapshots) && cached.snapshots.length > 0) {
+      setCachedSnapshots(cached.snapshots);
+    }
+    if (typeof cached.streak?.current_streak_days === 'number') {
+      setCachedStreakDays(cached.streak.current_streak_days);
+    }
+  }, [userId]);
+
+  const latestCachedScores = useMemo(() => {
+    const map: Partial<Record<PillarSlug, number>> = {};
+    for (const snap of cachedSnapshots) {
+      if (map[snap.pillar_slug] === undefined) {
+        map[snap.pillar_slug] = snap.score_pct;
+      }
+    }
+    return map;
+  }, [cachedSnapshots]);
+
+  const snapshotLabel = user?.full_name ? `${user.full_name} Snapshot` : 'Hexad Snapshot';
+  const snapshotBadge = user?.initials || 'HX';
+  const streakLabel =
+      typeof cachedStreakDays === 'number' ? `${cachedStreakDays}-day streak` : 'Daily streak';
+
   return (
       <div className="min-h-screen bg-[#F8F9F5] text-[#14221C]">
         {/* Top Nav */}
@@ -38,24 +114,38 @@ export default function LandingPage() {
               <a href="#weekly-rhythm" className="hover:text-[#14221C] transition">
                 Weekly Rhythm
               </a>
-              <Link href="/dashboard" className="hover:text-[#14221C] transition">
+              <Link href="/dashboard" prefetch className="hover:text-[#14221C] transition">
                 Live Preview
               </Link>
             </nav>
 
             <div className="flex items-center gap-3">
-              <Link
-                  href="/login"
-                  className="px-3.5 py-2 text-sm font-medium text-[#14221C] hover:text-[#084C36] transition"
-              >
-                Sign in
-              </Link>
-              <Link
-                  href="/signup"
-                  className="rounded-lg bg-[#084C36] px-4 py-2 text-sm font-medium text-white hover:bg-[#063A29] transition"
-              >
-                Get started
-              </Link>
+              {user ? (
+                  <Link
+                      href="/dashboard"
+                      prefetch
+                      className="rounded-lg bg-[#084C36] px-4 py-2 text-sm font-medium text-white hover:bg-[#063A29] transition"
+                  >
+                    Open dashboard
+                  </Link>
+              ) : (
+                  <>
+                    <Link
+                        href="/login"
+                        prefetch
+                        className="px-3.5 py-2 text-sm font-medium text-[#14221C] hover:text-[#084C36] transition"
+                    >
+                      Sign in
+                    </Link>
+                    <Link
+                        href="/signup"
+                        prefetch
+                        className="rounded-lg bg-[#084C36] px-4 py-2 text-sm font-medium text-white hover:bg-[#063A29] transition"
+                    >
+                      Get started
+                    </Link>
+                  </>
+              )}
             </div>
           </div>
         </header>
@@ -81,14 +171,16 @@ export default function LandingPage() {
 
               <div className="mt-7 flex flex-wrap items-center gap-3.5">
                 <Link
-                    href="/signup"
+                    href={user ? '/dashboard' : '/signup'}
+                    prefetch
                     className="inline-flex items-center gap-2 rounded-lg bg-[#084C36] px-5 py-3 text-sm font-medium text-white hover:bg-[#063A29] transition"
                 >
-                  Start tracking free
+                  {user ? 'Go to dashboard' : 'Start tracking free'}
                   <ArrowRight className="h-4 w-4" />
                 </Link>
                 <Link
                     href="/dashboard"
+                    prefetch
                     className="inline-flex items-center justify-center rounded-lg border border-[#D4D9CE] bg-white px-5 py-3 text-sm font-medium text-[#14221C] hover:bg-[#F2F4EE] transition"
                 >
                   Open dashboard
@@ -117,24 +209,26 @@ export default function LandingPage() {
                 <div className="flex items-center justify-between pb-5 border-b border-[#EEF1EA]">
                   <div className="flex items-center gap-3">
                     <div className="flex h-10 w-10 items-center justify-center rounded-full bg-[#E6F2EC] text-xs font-semibold text-[#084C36]">
-                      HX
+                      {snapshotBadge}
                     </div>
                     <div>
                       <div className="text-sm font-semibold text-[#14221C]">
-                        Hexad Snapshot
+                        {snapshotLabel}
                       </div>
                       <div className="text-xs text-[#67746D]">Weekly Balance Preview</div>
                     </div>
                   </div>
                   <div className="inline-flex items-center gap-1.5 rounded-full border border-[#DCE1D6] bg-[#F8F9F5] px-3 py-1 text-xs font-medium text-[#14221C]">
                     <Flame className="h-3.5 w-3.5 text-[#084C36]" />
-                    Daily streak
+                    {streakLabel}
                   </div>
                 </div>
 
                 <div className="mt-5 grid grid-cols-2 gap-3">
                   {PILLARS.map((pillar) => {
                     const preview = PREVIEW_SCORES[pillar.slug];
+                    const liveScore = latestCachedScores[pillar.slug];
+                    const pct = typeof liveScore === 'number' ? liveScore : preview.pct;
                     return (
                         <div
                             key={pillar.slug}
@@ -145,13 +239,13 @@ export default function LandingPage() {
                           {pillar.label}
                         </span>
                             <span className="font-semibold text-[#4A5750]">
-                          {preview.pct}%
+                          {pct}%
                         </span>
                           </div>
                           <div className="h-1.5 w-full overflow-hidden rounded-full bg-[#E5E9E0]">
                             <div
                                 className={`h-full rounded-full ${preview.bar}`}
-                                style={{ width: `${preview.pct}%` }}
+                                style={{ width: `${Math.min(100, Math.max(0, pct))}%` }}
                             />
                           </div>
                         </div>
@@ -184,6 +278,7 @@ export default function LandingPage() {
                 <Link
                     key={slug}
                     href={`/dashboard?pillar=${slug}`}
+                    prefetch
                     className="group rounded-2xl border border-[#DFE4D9] bg-white p-6 transition hover:border-[#084C36]/40 hover:shadow-sm"
                 >
                   <div className="flex items-center justify-between mb-5">
@@ -220,16 +315,18 @@ export default function LandingPage() {
             </div>
             <div className="flex items-center gap-3 shrink-0">
               <Link
-                  href="/signup"
+                  href={user ? '/dashboard' : '/signup'}
+                  prefetch
                   className="rounded-lg bg-white px-4 py-2.5 text-sm font-medium text-[#084C36] hover:bg-[#F1F5F2] transition"
               >
-                Create free account
+                {user ? 'Open dashboard' : 'Create free account'}
               </Link>
               <Link
-                  href="/login"
+                  href={user ? '/dashboard/weekly-insights' : '/login'}
+                  prefetch
                   className="rounded-lg border border-white/25 px-4 py-2.5 text-sm font-medium text-white hover:bg-white/10 transition"
               >
-                Sign in
+                {user ? 'Weekly insights' : 'Sign in'}
               </Link>
             </div>
           </div>
@@ -240,14 +337,14 @@ export default function LandingPage() {
           <div className="mx-auto flex max-w-6xl flex-col items-center justify-between gap-4 px-4 py-6 text-xs text-[#67746D] sm:flex-row sm:px-6">
             <div>Hexad · Personal Progress System</div>
             <div className="flex items-center gap-6">
-              <Link href="/dashboard" className="hover:text-[#14221C]">
+              <Link href="/dashboard" prefetch className="hover:text-[#14221C]">
                 Dashboard
               </Link>
-              <Link href="/dashboard" className="hover:text-[#14221C]">
+              <Link href="/dashboard/weekly-insights" prefetch className="hover:text-[#14221C]">
                 Weekly Insights
               </Link>
-              <Link href="/login" className="hover:text-[#14221C]">
-                Sign in
+              <Link href={user ? '/dashboard' : '/login'} prefetch className="hover:text-[#14221C]">
+                {user ? 'Account' : 'Sign in'}
               </Link>
             </div>
           </div>

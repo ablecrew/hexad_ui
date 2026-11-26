@@ -1,4 +1,3 @@
-// src/app/admin/page.tsx
 'use client';
 
 import React, { useCallback, useEffect, useState } from 'react';
@@ -8,8 +7,64 @@ import { useAuth } from '@/context/AuthContext';
 import { adminApi, AdminOverviewStats } from '@/lib/admin-api';
 import { isAdminUser } from '@/lib/rbac';
 
+const LAST_USER_KEY = 'hexad:last_user_id';
+const CACHE_TTL_MS = 10 * 60 * 1000;
+
+function getLastUserId(): string | null {
+    if (typeof window === 'undefined') return null;
+    try {
+        return window.localStorage.getItem(LAST_USER_KEY);
+    } catch {
+        return null;
+    }
+}
+
+function setLastUserId(userId?: string | number | null): void {
+    if (!userId || typeof window === 'undefined') return;
+    try {
+        window.localStorage.setItem(LAST_USER_KEY, String(userId));
+    } catch {
+        // ignore storage errors
+    }
+}
+
+function getAdminCacheKey(userId?: string | number | null): string | null {
+    const resolvedId = userId ? String(userId) : getLastUserId();
+    if (!resolvedId) return null;
+    return `hexad:admin:overview:${resolvedId}`;
+}
+
+function readAdminCache(key: string | null): AdminOverviewStats | null {
+    if (!key || typeof window === 'undefined') return null;
+    try {
+        const raw = window.localStorage.getItem(key);
+        if (!raw) return null;
+        const parsed = JSON.parse(raw) as {
+            data?: AdminOverviewStats;
+            savedAt?: number;
+        };
+        if (typeof parsed.savedAt !== 'number' || Date.now() - parsed.savedAt > CACHE_TTL_MS) {
+            return null;
+        }
+        return parsed.data ?? null;
+    } catch {
+        return null;
+    }
+}
+
+function writeAdminCache(key: string | null, data: AdminOverviewStats): void {
+    if (!key || typeof window === 'undefined') return;
+    try {
+        window.localStorage.setItem(key, JSON.stringify({ data, savedAt: Date.now() }));
+    } catch {
+        // ignore storage errors
+    }
+}
+
 export default function AdminOverviewPage() {
     const { user } = useAuth();
+    const userId = user?.id;
+
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
     const [statusMessage, setStatusMessage] = useState<string | null>(null);
@@ -21,13 +76,38 @@ export default function AdminOverviewPage() {
     const [inviteRole, setInviteRole] = useState('Member');
     const [submitting, setSubmitting] = useState(false);
 
+    useEffect(() => {
+        if (userId) {
+            setLastUserId(userId);
+        }
+    }, [userId]);
+
+    // Hydrate from localStorage after mount so SSR and initial client HTML match
+    useEffect(() => {
+        const cached = readAdminCache(getAdminCacheKey(userId));
+        if (cached) {
+            setStats((prev) => prev ?? cached);
+            setLoading(false);
+        }
+    }, [userId]);
+
     const loadOverview = useCallback(async () => {
         if (!user || !isAdminUser(user)) return;
-        setLoading(true);
+        const activeKey = getAdminCacheKey(user.id);
+        const cached = readAdminCache(activeKey);
+
+        if (cached) {
+            setStats((prev) => prev ?? cached);
+            setLoading(false);
+        } else {
+            setLoading(true);
+        }
+
         setError(null);
         try {
             const res = await adminApi.getOverview();
             setStats(res);
+            writeAdminCache(activeKey, res);
         } catch (err) {
             setError(err instanceof Error ? err.message : 'Failed to load admin overview.');
         } finally {
@@ -138,8 +218,8 @@ export default function AdminOverviewPage() {
                                                     className="font-mono font-semibold"
                                                     style={{ color: row.bar_color }}
                                                 >
-                          {row.score_pct}%
-                        </span>
+                                                    {row.score_pct}%
+                                                </span>
                                             </div>
                                             <div className="h-2 w-full overflow-hidden rounded-full bg-[#ECEEEB]">
                                                 <div
@@ -178,8 +258,8 @@ export default function AdminOverviewPage() {
                                                 </div>
                                             </div>
                                             <span className="font-mono text-xs text-[#707974] shrink-0">
-                        {item.time_label}
-                      </span>
+                                                {item.time_label}
+                                            </span>
                                         </div>
                                     ))
                                 )}

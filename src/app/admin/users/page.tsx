@@ -1,4 +1,3 @@
-// src/app/admin/users/page.tsx
 'use client';
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
@@ -8,8 +7,64 @@ import { useAuth } from '@/context/AuthContext';
 import { adminApi, AdminMemberRecord, AdminUsersResponse } from '@/lib/admin-api';
 import { getUserAvatarPalette, isAdminUser } from '@/lib/rbac';
 
+const LAST_USER_KEY = 'hexad:last_user_id';
+const CACHE_TTL_MS = 10 * 60 * 1000;
+
+function getLastUserId(): string | null {
+    if (typeof window === 'undefined') return null;
+    try {
+        return window.localStorage.getItem(LAST_USER_KEY);
+    } catch {
+        return null;
+    }
+}
+
+function setLastUserId(userId?: string | number | null): void {
+    if (!userId || typeof window === 'undefined') return;
+    try {
+        window.localStorage.setItem(LAST_USER_KEY, String(userId));
+    } catch {
+        // ignore storage errors
+    }
+}
+
+function getAdminUsersCacheKey(userId?: string | number | null): string | null {
+    const resolvedId = userId ? String(userId) : getLastUserId();
+    if (!resolvedId) return null;
+    return `hexad:admin:users:${resolvedId}`;
+}
+
+function readAdminUsersCache(key: string | null): AdminUsersResponse | null {
+    if (!key || typeof window === 'undefined') return null;
+    try {
+        const raw = window.localStorage.getItem(key);
+        if (!raw) return null;
+        const parsed = JSON.parse(raw) as {
+            data?: AdminUsersResponse;
+            savedAt?: number;
+        };
+        if (typeof parsed.savedAt !== 'number' || Date.now() - parsed.savedAt > CACHE_TTL_MS) {
+            return null;
+        }
+        return parsed.data ?? null;
+    } catch {
+        return null;
+    }
+}
+
+function writeAdminUsersCache(key: string | null, data: AdminUsersResponse): void {
+    if (!key || typeof window === 'undefined') return;
+    try {
+        window.localStorage.setItem(key, JSON.stringify({ data, savedAt: Date.now() }));
+    } catch {
+        // ignore storage errors
+    }
+}
+
 export default function AdminUsersPage() {
     const { user } = useAuth();
+    const userId = user?.id;
+
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
     const [statusMessage, setStatusMessage] = useState<string | null>(null);
@@ -22,13 +77,38 @@ export default function AdminUsersPage() {
     const [inviteRole, setInviteRole] = useState('Member');
     const [submitting, setSubmitting] = useState(false);
 
+    useEffect(() => {
+        if (userId) {
+            setLastUserId(userId);
+        }
+    }, [userId]);
+
+    // Hydrate from localStorage after mount so SSR and initial client HTML stay aligned
+    useEffect(() => {
+        const cached = readAdminUsersCache(getAdminUsersCacheKey(userId));
+        if (cached) {
+            setData((prev) => prev ?? cached);
+            setLoading(false);
+        }
+    }, [userId]);
+
     const loadMembers = useCallback(async () => {
         if (!user || !isAdminUser(user)) return;
-        setLoading(true);
+        const activeKey = getAdminUsersCacheKey(user.id);
+        const cached = readAdminUsersCache(activeKey);
+
+        if (cached) {
+            setData((prev) => prev ?? cached);
+            setLoading(false);
+        } else {
+            setLoading(true);
+        }
+
         setError(null);
         try {
             const res = await adminApi.getMembers();
             setData(res);
+            writeAdminUsersCache(activeKey, res);
         } catch (err) {
             setError(err instanceof Error ? err.message : 'Failed to load members.');
         } finally {
@@ -193,15 +273,15 @@ export default function AdminUsersPage() {
                                                     {m.balance_pct}%
                                                 </td>
                                                 <td className="py-3.5 px-3">
-                            <span
-                                className={`inline-flex rounded-full px-2.5 py-0.5 text-[11px] font-medium ${
-                                    isActive
-                                        ? 'bg-[#E6F2EC] text-[#004635]'
-                                        : 'bg-[#ECEEEB] text-[#707974]'
-                                }`}
-                            >
-                              {m.status}
-                            </span>
+                                                        <span
+                                                            className={`inline-flex rounded-full px-2.5 py-0.5 text-[11px] font-medium ${
+                                                                isActive
+                                                                    ? 'bg-[#E6F2EC] text-[#004635]'
+                                                                    : 'bg-[#ECEEEB] text-[#707974]'
+                                                            }`}
+                                                        >
+                                                            {m.status}
+                                                        </span>
                                                 </td>
                                             </tr>
                                         );

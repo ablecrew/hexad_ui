@@ -7,8 +7,64 @@ import { useAuth } from '@/context/AuthContext';
 import { adminApi, AdminPlatformSettings } from '@/lib/admin-api';
 import { isAdminUser } from '@/lib/rbac';
 
+const LAST_USER_KEY = 'hexad:last_user_id';
+const CACHE_TTL_MS = 10 * 60 * 1000;
+
+function getLastUserId(): string | null {
+    if (typeof window === 'undefined') return null;
+    try {
+        return window.localStorage.getItem(LAST_USER_KEY);
+    } catch {
+        return null;
+    }
+}
+
+function setLastUserId(userId?: string | number | null): void {
+    if (!userId || typeof window === 'undefined') return;
+    try {
+        window.localStorage.setItem(LAST_USER_KEY, String(userId));
+    } catch {
+        // ignore storage errors
+    }
+}
+
+function getSettingsCacheKey(userId?: string | number | null): string | null {
+    const resolvedId = userId ? String(userId) : getLastUserId();
+    if (!resolvedId) return null;
+    return `hexad:admin:settings:${resolvedId}`;
+}
+
+function readSettingsCache(key: string | null): AdminPlatformSettings | null {
+    if (!key || typeof window === 'undefined') return null;
+    try {
+        const raw = window.localStorage.getItem(key);
+        if (!raw) return null;
+        const parsed = JSON.parse(raw) as {
+            data?: AdminPlatformSettings;
+            savedAt?: number;
+        };
+        if (typeof parsed.savedAt !== 'number' || Date.now() - parsed.savedAt > CACHE_TTL_MS) {
+            return null;
+        }
+        return parsed.data ?? null;
+    } catch {
+        return null;
+    }
+}
+
+function writeSettingsCache(key: string | null, data: AdminPlatformSettings): void {
+    if (!key || typeof window === 'undefined') return;
+    try {
+        window.localStorage.setItem(key, JSON.stringify({ data, savedAt: Date.now() }));
+    } catch {
+        // ignore storage errors
+    }
+}
+
 export default function AdminSettingsPage() {
     const { user } = useAuth();
+    const userId = user?.id;
+
     const [saving, setSaving] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [statusMessage, setStatusMessage] = useState<string | null>(null);
@@ -20,18 +76,43 @@ export default function AdminSettingsPage() {
     const [landingPreviewEnabled, setLandingPreviewEnabled] = useState(true);
     const [selfServeSignup, setSelfServeSignup] = useState(true);
 
+    const applySettings = useCallback((res: AdminPlatformSettings) => {
+        setAppName(res.app_name || 'Hexad');
+        setCurrency(res.default_currency || 'KSH');
+        setDigestDay(res.weekly_digest_day || 'Sunday evening');
+        setRemindersEnabled(Boolean(res.daily_checkin_reminders));
+        setLandingPreviewEnabled(Boolean(res.public_landing_preview));
+        setSelfServeSignup(Boolean(res.self_serve_signup));
+    }, []);
+
+    useEffect(() => {
+        if (userId) {
+            setLastUserId(userId);
+        }
+    }, [userId]);
+
+    // Hydrate from localStorage after mount so SSR and initial client HTML stay aligned
+    useEffect(() => {
+        const cached = readSettingsCache(getSettingsCacheKey(userId));
+        if (cached) {
+            applySettings(cached);
+        }
+    }, [userId, applySettings]);
+
     const loadSettings = useCallback(async () => {
         if (!user || !isAdminUser(user)) return;
-        const res = await adminApi.getSettings();
-        if (res) {
-            setAppName(res.app_name || 'Hexad');
-            setCurrency(res.default_currency || 'KSH');
-            setDigestDay(res.weekly_digest_day || 'Sunday evening');
-            setRemindersEnabled(Boolean(res.daily_checkin_reminders));
-            setLandingPreviewEnabled(Boolean(res.public_landing_preview));
-            setSelfServeSignup(Boolean(res.self_serve_signup));
+        const activeKey = getSettingsCacheKey(user.id);
+        const cached = readSettingsCache(activeKey);
+        if (cached) {
+            applySettings(cached);
         }
-    }, [user]);
+
+        const res = await adminApi.getSettings().catch(() => null);
+        if (res) {
+            applySettings(res);
+            writeSettingsCache(activeKey, res);
+        }
+    }, [user, applySettings]);
 
     useEffect(() => {
         void loadSettings();
@@ -41,16 +122,17 @@ export default function AdminSettingsPage() {
         setSaving(true);
         setError(null);
         setStatusMessage(null);
+        const payload: AdminPlatformSettings = {
+            app_name: appName.trim() || 'Hexad',
+            default_currency: currency,
+            weekly_digest_day: digestDay,
+            daily_checkin_reminders: remindersEnabled,
+            public_landing_preview: landingPreviewEnabled,
+            self_serve_signup: selfServeSignup,
+        };
         try {
-            const payload: AdminPlatformSettings = {
-                app_name: appName.trim() || 'Hexad',
-                default_currency: currency,
-                weekly_digest_day: digestDay,
-                daily_checkin_reminders: remindersEnabled,
-                public_landing_preview: landingPreviewEnabled,
-                self_serve_signup: selfServeSignup,
-            };
             await adminApi.saveSettings(payload);
+            writeSettingsCache(getSettingsCacheKey(userId), payload);
             setStatusMessage('Platform settings saved.');
         } catch (err) {
             setError(err instanceof Error ? err.message : 'Unable to save settings.');
@@ -151,8 +233,8 @@ export default function AdminSettingsPage() {
                                         : 'border border-[#BFC9C3] text-transparent'
                                 }`}
                             >
-                <Check className="h-3 w-3" />
-              </span>
+                                <Check className="h-3 w-3" />
+                            </span>
                         </button>
 
                         <button
@@ -175,8 +257,8 @@ export default function AdminSettingsPage() {
                                         : 'border border-[#BFC9C3] text-transparent'
                                 }`}
                             >
-                <Check className="h-3 w-3" />
-              </span>
+                                <Check className="h-3 w-3" />
+                            </span>
                         </button>
 
                         <button
@@ -199,8 +281,8 @@ export default function AdminSettingsPage() {
                                         : 'border border-[#BFC9C3] text-transparent'
                                 }`}
                             >
-                <Check className="h-3 w-3" />
-              </span>
+                                <Check className="h-3 w-3" />
+                            </span>
                         </button>
                     </div>
                 </div>
